@@ -18,7 +18,11 @@ Use when you need to:
 
 ## Prerequisites
 
-Requires `AI_GATEWAY_API_KEY` or a provider-specific key (e.g. `OPENAI_API_KEY`) in the environment.
+Requires one of:
+- `OPENROUTER_API_KEY` (OpenRouter; auto-selected when `AI_GATEWAY_API_KEY` is unset)
+- `AI_GATEWAY_API_KEY` or a provider-specific key (e.g. `OPENAI_API_KEY`) for gateway
+
+Optional: `AI_CLI_PROVIDER=openrouter|gateway`, `AI_CLI_TEXT_MODEL`, `AI_CLI_IMAGE_MODEL`, `AI_CLI_VIDEO_MODEL`.
 
 ## Commands
 
@@ -27,6 +31,7 @@ ai text "explain this code"              # generate text
 ai image "a sunset over mountains"       # generate an image
 ai video "a spinning triangle"           # generate a video
 ai models --type image                   # list available models
+ai models --provider openrouter          # list OpenRouter models
 ```
 
 ## Key Flags
@@ -36,6 +41,7 @@ ai models --type image                   # list available models
 -o, --output <path>    Output file or directory
 -n, --count <n>        Number of generations per model
 -q, --quiet            Suppress progress output
+--provider <name>      gateway | openrouter
 --json                 Output structured metadata as JSON (paths, timing, success/failure)
 ```
 

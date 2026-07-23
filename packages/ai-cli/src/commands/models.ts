@@ -1,10 +1,7 @@
 import type { Command } from "commander";
 
-import {
-  fetchGatewayModels,
-  type Modality,
-  type ModelEntry,
-} from "../lib/models.js";
+import { fetchModels, type Modality, type ModelEntry } from "../lib/models.js";
+import { resolveProvider } from "../lib/providers.js";
 
 function groupByCreator(models: ModelEntry[]): Map<string, ModelEntry[]> {
   const groups = new Map<string, ModelEntry[]>();
@@ -25,12 +22,18 @@ function modelName(id: string): string {
 export function registerModelsCommand(program: Command) {
   program
     .command("models")
-    .description("List available models from AI Gateway")
+    .description("List available models")
     .option("--type <type>", "Filter by type: text, image, video")
     .option("--creator <name>", "Filter by creator (e.g. openai, google)")
+    .option("--provider <provider>", "Provider: gateway, openrouter")
     .option("--json", "Output as JSON (includes descriptions)")
     .action(
-      async (opts: { type?: string; creator?: string; json?: boolean }) => {
+      async (opts: {
+        type?: string;
+        creator?: string;
+        provider?: string;
+        json?: boolean;
+      }) => {
         const validTypes = ["text", "image", "video"];
         const filterType = opts.type?.toLowerCase() as Modality | undefined;
         if (filterType && !validTypes.includes(filterType)) {
@@ -41,10 +44,11 @@ export function registerModelsCommand(program: Command) {
         }
         const filterCreator = opts.creator?.toLowerCase();
 
-        const gatewayModels = await fetchGatewayModels();
+        const provider = resolveProvider(opts.provider);
+        const providerModels = await fetchModels(provider);
 
         if (opts.json) {
-          let entries = gatewayModels.all;
+          let entries = providerModels.all;
           if (filterType) {
             entries = entries.filter((m) =>
               m.capabilities.includes(filterType)
@@ -69,11 +73,11 @@ export function registerModelsCommand(program: Command) {
 
         const sections: { title: string; entries: ModelEntry[] }[] = [];
         if (!filterType || filterType === "text")
-          sections.push({ title: "Text", entries: gatewayModels.text });
+          sections.push({ title: "Text", entries: providerModels.text });
         if (!filterType || filterType === "image")
-          sections.push({ title: "Image", entries: gatewayModels.image });
+          sections.push({ title: "Image", entries: providerModels.image });
         if (!filterType || filterType === "video")
-          sections.push({ title: "Video", entries: gatewayModels.video });
+          sections.push({ title: "Video", entries: providerModels.video });
 
         let totalCount = 0;
         for (const section of sections) {

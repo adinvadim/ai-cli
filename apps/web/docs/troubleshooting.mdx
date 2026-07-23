@@ -15,6 +15,7 @@ Set one of the following environment variables:
 ```bash
 export AI_GATEWAY_API_KEY="your-key"   # recommended — access to all models
 export OPENAI_API_KEY="sk-..."         # OpenAI models only
+export OPENROUTER_API_KEY="sk-or-..."  # OpenRouter with --provider openrouter
 ```
 
 Add the export to your shell profile (`~/.zshrc`, `~/.bashrc`) to persist across sessions.
@@ -53,11 +54,11 @@ Upgrade to the latest release:
 npm update -g ai-cli
 ```
 
-## Gateway unreachable
+## Provider model list unreachable
 
-If the AI Gateway is unreachable, the `models` command will return an empty list and short-name resolution will be unavailable. Use fully-qualified model IDs (`provider/model-name`) to bypass model discovery. Generation commands will still work if you specify the full model ID with `-m`.
+If the selected provider's model API is unreachable, the `models` command will return an empty list and short-name resolution will be unavailable. Use fully-qualified model IDs (`creator/model-name`) to bypass model discovery. Generation commands will still work if you specify the full model ID with `-m`.
 
-Check your network connection and verify the gateway status at [vercel.com/status](https://www.vercel.com/status).
+Check your network connection and provider status.
 
 ## No output / empty response
 

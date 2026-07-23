@@ -49,6 +49,9 @@ ai image "edit this" < photo.png
   <Property name="--json" type="boolean">
     Output metadata as JSON.
   </Property>
+  <Property name="--provider" type="gateway | openrouter" default="gateway">
+    Model provider.
+  </Property>
 </Properties>
 
 ---
@@ -91,6 +94,9 @@ ai image "a dragon" | ai video "animate this"
   </Property>
   <Property name="--json" type="boolean">
     Output metadata as JSON.
+  </Property>
+  <Property name="--provider" type="gateway | openrouter" default="gateway">
+    Model provider.
   </Property>
 </Properties>
 
@@ -138,18 +144,22 @@ ai text "summarize this" < notes.txt
   <Property name="--json" type="boolean">
     Output metadata as JSON.
   </Property>
+  <Property name="--provider" type="gateway | openrouter" default="gateway">
+    Model provider.
+  </Property>
 </Properties>
 
 ---
 
 ## models
 
-List available models from the AI Gateway.
+List available models from the selected provider.
 
 ```bash
 ai models
 ai models --type image
 ai models --creator openai --json
+ai models --provider openrouter
 ```
 
 ### Options
@@ -161,12 +171,15 @@ ai models --creator openai --json
   <Property name="--creator" type="string">
     Filter by creator (e.g. `openai`, `google`).
   </Property>
+  <Property name="--provider" type="gateway | openrouter" default="gateway">
+    Model provider.
+  </Property>
   <Property name="--json" type="boolean">
     Output as JSON with descriptions.
   </Property>
 </Properties>
 
-Models are fetched live from the AI Gateway.
+Models are fetched live from the selected provider.
 
 ---
 

@@ -20,24 +20,36 @@ yarn global add ai-cli
 
 ## API key
 
-ai-cli requires an API key for model access. Set one of the following environment variables:
+ai-cli requires an API key for model access. OpenRouter-first setup:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+export AI_CLI_PROVIDER="openrouter"   # optional when only OPENROUTER_API_KEY is set
+ai text "hello"
+```
+
+Supported keys:
 
 <Properties>
+  <Property name="OPENROUTER_API_KEY" type="string">
+    OpenRouter key. Auto-selects `openrouter` when `AI_GATEWAY_API_KEY` is unset.
+  </Property>
   <Property name="AI_GATEWAY_API_KEY" type="string">
     Vercel AI Gateway key. Provides access to all supported models through a single key.
   </Property>
   <Property name="OPENAI_API_KEY" type="string">
-    Provider-specific key. Use if you only need OpenAI models.
+    Provider-specific key. Use if you only need OpenAI models via the gateway path.
   </Property>
 </Properties>
 
-Get a gateway key from the [Vercel AI Gateway dashboard](https://vercel.com/docs/ai-gateway).
+Get a gateway key from the [Vercel AI Gateway dashboard](https://vercel.com/docs/ai-gateway). Get an OpenRouter key from [openrouter.ai/keys](https://openrouter.ai/keys).
 
 ```bash
 export AI_GATEWAY_API_KEY="your-key"
+ai text --provider gateway "hello"
 ```
 
-Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to persist across sessions.
+Add exports to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to persist across sessions.
 
 ## Verify
 
@@ -50,11 +62,13 @@ If you see generated text, you're ready.
 ## Requirements
 
 <Properties>
-  <Property name="Bun" type="1.0+" required>
-    ai-cli runs with Bun. Install from bun.sh.
+  <Property name="Node.js" type="20+" required>
+    Runtime requirement for the published CLI (`engines.node`).
+  </Property>
+  <Property name="Bun" type="1.0+">
+    Development and build only (`bun test`, `bun build`). Not required to run a global npm install.
   </Property>
   <Property name="API key" type="string" required>
-    A Vercel AI Gateway key or provider-specific key.
+    A Vercel AI Gateway key, provider-specific key, or OpenRouter key.
   </Property>
 </Properties>
-

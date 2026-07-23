@@ -1,6 +1,6 @@
 # ai
 
-A tiny, agent-native CLI for generating images, video and text with dead-simple commands, stdin support and predictable artifact outputs. Uses [Vercel AI SDK](https://sdk.vercel.ai) and [AI Gateway](https://vercel.com/docs/ai-gateway) for unified access to hundreds of models.
+A tiny, agent-native CLI for generating images, video and text with dead-simple commands, stdin support and predictable artifact outputs. Uses [Vercel AI SDK](https://sdk.vercel.ai) with optional [OpenRouter](https://openrouter.ai) or [AI Gateway](https://vercel.com/docs/ai-gateway) backends.
 
 ## Install
 
@@ -8,7 +8,48 @@ A tiny, agent-native CLI for generating images, video and text with dead-simple 
 npm install -g ai-cli
 ```
 
-Requires Node.js 20+ and an [AI Gateway](https://vercel.com/docs/ai-gateway) API key or a provider-specific key (e.g. `OPENAI_API_KEY`).
+Requires **Node.js 20+**. Bun is only needed for local development/build, not to run the published CLI.
+
+## Setup (OpenRouter-first)
+
+1. Get an API key from [OpenRouter](https://openrouter.ai/keys).
+2. Export it (and optional defaults) in your shell profile:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+export AI_CLI_PROVIDER="openrouter"          # optional if only OPENROUTER_API_KEY is set
+export AI_CLI_TEXT_MODEL="openai/gpt-5-mini" # optional
+export AI_CLI_IMAGE_MODEL="openai/gpt-5-image-mini"
+```
+
+3. Verify:
+
+```bash
+ai models --type text --provider openrouter | head
+ai text "hello"
+```
+
+### AI Gateway (optional)
+
+```bash
+export AI_GATEWAY_API_KEY="..."
+# or a provider-specific key such as OPENAI_API_KEY
+ai text --provider gateway "hello"
+```
+
+### Provider selection order
+
+1. `--provider <gateway|openrouter>` flag
+2. `AI_CLI_PROVIDER` env
+3. Auto-infer: if `OPENROUTER_API_KEY` is set and `AI_GATEWAY_API_KEY` is not → `openrouter`, else `gateway`
+
+### Default models (per provider)
+
+| Type | Gateway | OpenRouter | Env override |
+| --- | --- | --- | --- |
+| text | `openai/gpt-5.5` | `openai/gpt-5-mini` | `AI_CLI_TEXT_MODEL` |
+| image | `openai/gpt-image-2` | `openai/gpt-5-image-mini` | `AI_CLI_IMAGE_MODEL` |
+| video | `bytedance/seedance-2.0` | `openrouter/auto` | `AI_CLI_VIDEO_MODEL` |
 
 ## Usage
 
@@ -42,10 +83,11 @@ All commands support:
 -n, --count <n>          Number of generations per model (default: 1)
 -p, --concurrency <n>    Max parallel generations (default: 4, video: 2)
 -q, --quiet              Suppress progress output
+--provider <provider>    Provider: gateway, openrouter
 --json                   Output metadata as JSON
 ```
 
-Model IDs can be specified as `creator/model-name` or just `model-name` (resolved against models fetched from the gateway):
+Model IDs can be specified as `creator/model-name` or just `model-name` (resolved against models fetched from the selected provider):
 
 ```bash
 ai text -m gpt-5.5 "hello"          # resolves to openai/gpt-5.5
@@ -109,10 +151,11 @@ cat screenshot.png | ai text "list the visible errors"
 ```
 --type <type>            Filter by type: text, image, video
 --creator <name>         Filter by creator (e.g. openai, google)
+--provider <provider>    Provider: gateway, openrouter
 --json                   Output as JSON (includes descriptions)
 ```
 
-All model types (text, image, video) are fetched live from the AI Gateway.
+All model types (text, image, video) are fetched live from the selected provider.
 
 ### Multi-Model Comparison
 
@@ -144,17 +187,19 @@ When the CLI needs to choose a filename, it uses a response id when available an
 
 | Variable | Description |
 |---|---|
+| `OPENROUTER_API_KEY` | OpenRouter authentication key |
 | `AI_GATEWAY_API_KEY` | AI Gateway authentication key |
 | `OPENAI_API_KEY` | Provider-specific key (or other provider keys) |
-| `AI_CLI_TEXT_MODEL` | Default text model (overrides `openai/gpt-5.5`) |
-| `AI_CLI_IMAGE_MODEL` | Default image model (overrides `openai/gpt-image-2`) |
-| `AI_CLI_VIDEO_MODEL` | Default video model (overrides `bytedance/seedance-2.0`) |
+| `AI_CLI_PROVIDER` | Default provider: `gateway` or `openrouter` |
+| `AI_CLI_TEXT_MODEL` | Default text model (provider-specific default if unset) |
+| `AI_CLI_IMAGE_MODEL` | Default image model (provider-specific default if unset) |
+| `AI_CLI_VIDEO_MODEL` | Default video model (provider-specific default if unset) |
 | `AI_CLI_OUTPUT_DIR` | Default output directory for generated files |
 | `AI_CLI_PREVIEW` | Set to `1` to force inline image preview, `0` to disable |
 | `NO_COLOR` | Disable ANSI color output |
 | `FORCE_COLOR` | Force color output even when not a TTY |
 
-The `-m` flag always takes priority over `AI_CLI_*_MODEL` env vars. The `-o` flag always takes priority over `AI_CLI_OUTPUT_DIR`.
+Precedence: `--provider` > `AI_CLI_PROVIDER` > key auto-infer. `-m` > `AI_CLI_*_MODEL`. `-o` > `AI_CLI_OUTPUT_DIR`.
 
 ### Timeouts
 

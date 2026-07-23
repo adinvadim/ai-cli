@@ -1,4 +1,4 @@
-import { experimental_generateVideo as generateVideo, gateway } from "ai";
+import { experimental_generateVideo as generateVideo } from "ai";
 import type { Command } from "commander";
 
 import {
@@ -7,12 +7,13 @@ import {
   type ImageReference,
 } from "../lib/image-references.js";
 import { buildJobs, runJobs } from "../lib/jobs.js";
-import { fetchGatewayModels, resolveModels } from "../lib/models.js";
+import { fetchModels, resolveModels } from "../lib/models.js";
 import {
   parsePositiveInt,
   parseAspectRatio,
   parseNonNegativeFloat,
 } from "../lib/parse.js";
+import { resolveProvider, videoModel } from "../lib/providers.js";
 import { responseIdFromHeaders } from "../lib/response-id.js";
 import { readStdin } from "../lib/stdin.js";
 
@@ -30,6 +31,7 @@ interface VideoOptions {
   json?: boolean;
   concurrency?: string;
   preview?: boolean;
+  provider?: string;
 }
 
 export function registerVideoCommand(program: Command) {
@@ -61,6 +63,7 @@ export function registerVideoCommand(program: Command) {
       "-p, --concurrency <n>",
       `Max parallel generations (default: ${DEFAULT_CONCURRENCY})`
     )
+    .option("--provider <provider>", "Provider: gateway, openrouter")
     .action(async (rawPrompt: string | undefined, opts: VideoOptions) => {
       const prompt = rawPrompt?.trim() || undefined;
       const stdin = await readStdin();
@@ -100,8 +103,14 @@ export function registerVideoCommand(program: Command) {
           : { image: images[0]! };
       }
 
-      const gatewayModels = await fetchGatewayModels();
-      const models = resolveModels("video", opts.model, gatewayModels.video);
+      const provider = resolveProvider(opts.provider);
+      const providerModels = await fetchModels(provider);
+      const models = resolveModels(
+        "video",
+        opts.model,
+        providerModels.video,
+        provider
+      );
       const countPerModel = opts.count
         ? parsePositiveInt(opts.count, "count")
         : 1;
@@ -123,7 +132,7 @@ export function registerVideoCommand(program: Command) {
               "http-referer": "https://github.com/vercel-labs/ai-cli",
               "x-title": "ai-cli",
             },
-            model: gateway.video(modelId),
+            model: videoModel(provider, modelId),
             prompt: videoPrompt,
             abortSignal: abort,
             aspectRatio,

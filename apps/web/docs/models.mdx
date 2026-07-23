@@ -6,13 +6,13 @@ order: 4
 
 ## Default models
 
-Each command type has a default model used when `-m` is not specified:
+Defaults depend on the selected provider (`gateway` or `openrouter`):
 
-| Type | Default | Env override |
-| --- | --- | --- |
-| text | `openai/gpt-5.5` | `AI_CLI_TEXT_MODEL` |
-| image | `openai/gpt-image-2` | `AI_CLI_IMAGE_MODEL` |
-| video | `bytedance/seedance-2.0` | `AI_CLI_VIDEO_MODEL` |
+| Type | Gateway | OpenRouter | Env override |
+| --- | --- | --- | --- |
+| text | `openai/gpt-5.5` | `openai/gpt-5-mini` | `AI_CLI_TEXT_MODEL` |
+| image | `openai/gpt-image-2` | `openai/gpt-5-image-mini` | `AI_CLI_IMAGE_MODEL` |
+| video | `bytedance/seedance-2.0` | `openrouter/auto` | `AI_CLI_VIDEO_MODEL` |
 
 The `-m` flag always takes priority over environment variables.
 
@@ -25,7 +25,7 @@ ai text -m "anthropic/claude-sonnet-4" "hello"
 ai image -m "bfl/flux-2-pro" "a sunset"
 ```
 
-Short names (without the creator prefix) are resolved against models fetched from the gateway:
+Short names (without the creator prefix) are resolved against models fetched from the selected provider:
 
 ```bash
 ai text -m gpt-5.5 "hello"
@@ -54,14 +54,30 @@ This produces 4 images total (2 per model), saved as `output-1.png` through `out
 ai models                          # all models
 ai models --type image             # image models only
 ai models --creator google         # Google models only
+ai models --provider openrouter    # OpenRouter models
 ai models --json                   # JSON with descriptions
 ```
 
 In human mode, models are grouped by creator and display short names. Use `--json` for machine-readable output with full IDs and descriptions.
 
-## Providers
+## Provider selection
 
-All models are accessed through [Vercel AI Gateway](https://vercel.com/docs/ai-gateway):
+Order:
+
+1. `--provider gateway|openrouter`
+2. `AI_CLI_PROVIDER`
+3. Auto-infer: only `OPENROUTER_API_KEY` (no `AI_GATEWAY_API_KEY`) → `openrouter`, else `gateway`
+
+```bash
+ai text --provider openrouter -m "anthropic/claude-sonnet-4" "hello"
+export AI_CLI_PROVIDER="openrouter"
+```
+
+OpenRouter requests use `OPENROUTER_API_KEY`. Model discovery reads live data from the selected provider.
+
+## Gateway creators
+
+AI Gateway includes creators such as:
 
 <Cards>
   <Card title="OpenAI" description="GPT-5.5, GPT-4.1, GPT Image 2, o3, o4-mini" />

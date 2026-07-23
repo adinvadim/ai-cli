@@ -1,16 +1,17 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 
 import {
+  fetchModels,
   resolveModels,
   fetchGatewayModels,
-  resetGatewayCache,
+  resetModelsCache,
 } from "./models.js";
 
 const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  resetGatewayCache();
+  resetModelsCache();
 });
 
 function mockGateway(models: Record<string, unknown>[]) {
@@ -59,6 +60,15 @@ describe("resolveModels", () => {
     const known = [{ id: "openai/gpt-5" }];
     expect(resolveModels("text", "nonexistent", known)).toEqual([
       "nonexistent",
+    ]);
+  });
+
+  test("uses OpenRouter defaults for OpenRouter provider", () => {
+    expect(resolveModels("text", undefined, undefined, "openrouter")).toEqual([
+      "openai/gpt-5-mini",
+    ]);
+    expect(resolveModels("image", undefined, undefined, "openrouter")).toEqual([
+      "openai/gpt-5-image-mini",
     ]);
   });
 });
@@ -303,5 +313,66 @@ describe("fetchGatewayModels", () => {
 
     const result = await fetchGatewayModels();
     expect(result.text[0].creator).toBe("openai");
+  });
+});
+
+describe("fetchModels openrouter", () => {
+  test("partitions OpenRouter models by output modality", async () => {
+    mockGateway([
+      {
+        id: "openai/gpt-5",
+        name: "GPT 5",
+        description: "Text model",
+        architecture: { output_modalities: ["text"] },
+        pricing: { prompt: "0.000001", completion: "0.00001" },
+      },
+      {
+        id: "google/gemini-flash-image",
+        name: "Gemini Flash Image",
+        architecture: { output_modalities: ["text", "image"] },
+        pricing: { image: "0.03" },
+      },
+      {
+        id: "vendor/video-model",
+        architecture: { output_modalities: ["video"] },
+      },
+      {
+        id: "vendor/embedding",
+        architecture: { output_modalities: ["embedding"] },
+      },
+    ]);
+
+    const result = await fetchModels("openrouter");
+
+    expect(result.text.map((m) => m.id)).toEqual([
+      "openai/gpt-5",
+      "google/gemini-flash-image",
+    ]);
+    expect(result.image.map((m) => m.id)).toEqual([
+      "google/gemini-flash-image",
+    ]);
+    expect(result.video.map((m) => m.id)).toEqual(["vendor/video-model"]);
+    expect(result.all).toHaveLength(3);
+
+    expect(result.text[0].creator).toBe("openai");
+    expect(result.text[0].pricing).toEqual({
+      input: "0.000001",
+      output: "0.00001",
+    });
+    expect(result.image[0].pricing).toEqual({ image: "0.03" });
+    expect(result.languageImageModelIds.has("google/gemini-flash-image")).toBe(
+      true
+    );
+  });
+
+  test("returns empty lists on OpenRouter error", async () => {
+    mockGatewayError();
+
+    const result = await fetchModels("openrouter");
+
+    expect(result.text).toHaveLength(0);
+    expect(result.image).toHaveLength(0);
+    expect(result.video).toHaveLength(0);
+    expect(result.all).toHaveLength(0);
   });
 });

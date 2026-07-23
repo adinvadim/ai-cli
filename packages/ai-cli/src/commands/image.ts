@@ -1,4 +1,4 @@
-import { generateImage, generateText, gateway } from "ai";
+import { generateImage, generateText } from "ai";
 import type { Command } from "commander";
 
 import {
@@ -7,8 +7,9 @@ import {
   type ImageReference,
 } from "../lib/image-references.js";
 import { buildJobs, runJobs } from "../lib/jobs.js";
-import { fetchGatewayModels, resolveModels } from "../lib/models.js";
+import { fetchModels, resolveModels } from "../lib/models.js";
 import { parsePositiveInt, parseSize, parseAspectRatio } from "../lib/parse.js";
+import { imageModel, resolveProvider, textModel } from "../lib/providers.js";
 import { responseIdFromHeaders } from "../lib/response-id.js";
 import { readStdin } from "../lib/stdin.js";
 
@@ -28,6 +29,7 @@ interface ImageOptions {
   json?: boolean;
   concurrency?: string;
   preview?: boolean;
+  provider?: string;
 }
 
 export function registerImageCommand(program: Command) {
@@ -61,6 +63,7 @@ export function registerImageCommand(program: Command) {
       "-p, --concurrency <n>",
       `Max parallel generations (default: ${DEFAULT_CONCURRENCY})`
     )
+    .option("--provider <provider>", "Provider: gateway, openrouter")
     .action(async (rawPrompt: string | undefined, opts: ImageOptions) => {
       const prompt = rawPrompt?.trim() || undefined;
       const stdin = await readStdin();
@@ -93,8 +96,14 @@ export function registerImageCommand(program: Command) {
         imagePrompt = prompt!;
       }
 
-      const gatewayModels = await fetchGatewayModels();
-      const models = resolveModels("image", opts.model, gatewayModels.image);
+      const provider = resolveProvider(opts.provider);
+      const providerModels = await fetchModels(provider);
+      const models = resolveModels(
+        "image",
+        opts.model,
+        providerModels.image,
+        provider
+      );
       const countPerModel = opts.count
         ? parsePositiveInt(opts.count, "count")
         : 1;
@@ -120,7 +129,7 @@ export function registerImageCommand(program: Command) {
         async (modelId) => {
           const abort = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
 
-          if (gatewayModels.languageImageModelIds.has(modelId)) {
+          if (providerModels.languageImageModelIds.has(modelId)) {
             const messageContent: Array<
               | { type: "text"; text: string }
               | { type: "image"; image: ImageReference }
@@ -143,7 +152,7 @@ export function registerImageCommand(program: Command) {
                 });
               }
             }
-            const creator = gatewayModels.all.find(
+            const creator = providerModels.all.find(
               (m) => m.id === modelId
             )?.creator;
             const result = await generateText({
@@ -151,7 +160,7 @@ export function registerImageCommand(program: Command) {
                 "http-referer": "https://github.com/vercel-labs/ai-cli",
                 "x-title": "ai-cli",
               },
-              model: gateway(modelId),
+              model: textModel(provider, modelId),
               messages: [{ role: "user", content: messageContent }],
               abortSignal: abort,
               providerOptions:
@@ -178,7 +187,7 @@ export function registerImageCommand(program: Command) {
               "http-referer": "https://github.com/vercel-labs/ai-cli",
               "x-title": "ai-cli",
             },
-            model: gateway.image(modelId),
+            model: imageModel(provider, modelId),
             prompt: imagePrompt,
             abortSignal: abort,
             n: 1,

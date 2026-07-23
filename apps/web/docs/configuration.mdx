@@ -9,20 +9,26 @@ ai-cli is configured entirely through environment variables. There is no config 
 ## Environment variables
 
 <Properties>
+  <Property name="OPENROUTER_API_KEY" type="string">
+    OpenRouter key. Used when the selected provider is `openrouter`.
+  </Property>
   <Property name="AI_GATEWAY_API_KEY" type="string">
     Vercel AI Gateway API key. Provides access to all supported models.
   </Property>
   <Property name="OPENAI_API_KEY" type="string">
     Provider-specific key (or other provider keys like `ANTHROPIC_API_KEY`).
   </Property>
+  <Property name="AI_CLI_PROVIDER" type="gateway | openrouter">
+    Default provider. Overrides auto-infer unless `--provider` is passed.
+  </Property>
   <Property name="AI_CLI_TEXT_MODEL" type="string">
-    Default text model. Overrides `openai/gpt-5.5`.
+    Default text model. Overrides the provider-specific default.
   </Property>
   <Property name="AI_CLI_IMAGE_MODEL" type="string">
-    Default image model. Overrides `openai/gpt-image-2`.
+    Default image model. Overrides the provider-specific default.
   </Property>
   <Property name="AI_CLI_VIDEO_MODEL" type="string">
-    Default video model. Overrides `bytedance/seedance-2.0`.
+    Default video model. Overrides the provider-specific default.
   </Property>
   <Property name="AI_CLI_OUTPUT_DIR" type="path">
     Default output directory for generated files.
@@ -38,16 +44,44 @@ ai-cli is configured entirely through environment variables. There is no config 
   </Property>
 </Properties>
 
+## Provider selection
+
+1. `--provider` flag
+2. `AI_CLI_PROVIDER` env
+3. Auto-infer: `OPENROUTER_API_KEY` set and `AI_GATEWAY_API_KEY` unset → `openrouter`, else `gateway`
+
+## Default models
+
+| Type | Gateway | OpenRouter | Env override |
+| --- | --- | --- | --- |
+| text | `openai/gpt-5.5` | `openai/gpt-5-mini` | `AI_CLI_TEXT_MODEL` |
+| image | `openai/gpt-image-2` | `openai/gpt-5-image-mini` | `AI_CLI_IMAGE_MODEL` |
+| video | `bytedance/seedance-2.0` | `openrouter/auto` | `AI_CLI_VIDEO_MODEL` |
+
 ## Precedence
 
+- `--provider` always takes priority over `AI_CLI_PROVIDER` and auto-infer.
 - `-m` flag always takes priority over `AI_CLI_*_MODEL` env vars.
 - `-o` flag always takes priority over `AI_CLI_OUTPUT_DIR`.
 - `--no-preview` takes priority over `AI_CLI_PREVIEW`.
 
 ## Example shell profile
 
+OpenRouter-first:
+
+```bash
+export OPENROUTER_API_KEY="sk-or-..."
+export AI_CLI_PROVIDER="openrouter"
+export AI_CLI_TEXT_MODEL="openai/gpt-5-mini"
+export AI_CLI_IMAGE_MODEL="openai/gpt-5-image-mini"
+export AI_CLI_OUTPUT_DIR="$HOME/ai-output"
+```
+
+AI Gateway:
+
 ```bash
 export AI_GATEWAY_API_KEY="gw_..."
+export AI_CLI_PROVIDER="gateway"
 export AI_CLI_TEXT_MODEL="anthropic/claude-sonnet-4"
 export AI_CLI_IMAGE_MODEL="bfl/flux-2-pro"
 export AI_CLI_OUTPUT_DIR="$HOME/ai-output"

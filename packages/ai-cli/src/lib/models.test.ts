@@ -64,12 +64,32 @@ describe("resolveModels", () => {
   });
 
   test("uses OpenRouter defaults for OpenRouter provider", () => {
-    expect(resolveModels("text", undefined, undefined, "openrouter")).toEqual([
-      "openai/gpt-5-mini",
-    ]);
-    expect(resolveModels("image", undefined, undefined, "openrouter")).toEqual([
-      "openai/gpt-5-image-mini",
-    ]);
+    const prev = {
+      text: process.env.AI_CLI_TEXT_MODEL,
+      image: process.env.AI_CLI_IMAGE_MODEL,
+      video: process.env.AI_CLI_VIDEO_MODEL,
+    };
+    try {
+      delete process.env.AI_CLI_TEXT_MODEL;
+      delete process.env.AI_CLI_IMAGE_MODEL;
+      delete process.env.AI_CLI_VIDEO_MODEL;
+      expect(resolveModels("text", undefined, undefined, "openrouter")).toEqual([
+        "openai/gpt-5-mini",
+      ]);
+      expect(resolveModels("image", undefined, undefined, "openrouter")).toEqual([
+        "openai/gpt-5-image-mini",
+      ]);
+      expect(resolveModels("video", undefined, undefined, "openrouter")).toEqual([
+        "openrouter/auto",
+      ]);
+    } finally {
+      if (prev.text === undefined) delete process.env.AI_CLI_TEXT_MODEL;
+      else process.env.AI_CLI_TEXT_MODEL = prev.text;
+      if (prev.image === undefined) delete process.env.AI_CLI_IMAGE_MODEL;
+      else process.env.AI_CLI_IMAGE_MODEL = prev.image;
+      if (prev.video === undefined) delete process.env.AI_CLI_VIDEO_MODEL;
+      else process.env.AI_CLI_VIDEO_MODEL = prev.video;
+    }
   });
 });
 

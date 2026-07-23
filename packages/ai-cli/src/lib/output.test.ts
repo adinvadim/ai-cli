@@ -95,4 +95,30 @@ describe("writeOutput", () => {
       expect(readFileSync(path!)).toEqual(svg);
     });
   });
+
+  test("sniffs jpeg and webp extensions from magic bytes", async () => {
+    await withTempDir(async (dir) => {
+      const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
+      const jpegPath = await writeOutput({
+        data: jpeg,
+        format: "image",
+        outputPath: dir,
+        outputId: "photo",
+        quiet: true,
+        display: false,
+      });
+      expect(basename(jpegPath!)).toBe("photo.jpg");
+
+      const webp = Buffer.from("RIFF\x00\x00\x00\x00WEBP", "binary");
+      const webpPath = await writeOutput({
+        data: webp,
+        format: "image",
+        outputPath: dir,
+        outputId: "anim",
+        quiet: true,
+        display: false,
+      });
+      expect(basename(webpPath!)).toBe("anim.webp");
+    });
+  });
 });

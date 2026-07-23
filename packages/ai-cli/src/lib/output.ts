@@ -27,8 +27,25 @@ export interface WriteOutputOptions {
   display?: boolean;
 }
 
-function defaultFilename(format: OutputFormat, outputId?: string): string {
-  return `${filenameStem(outputId)}${DEFAULT_EXTENSIONS[format]}`;
+function defaultFilename(
+  format: OutputFormat,
+  outputId?: string,
+  data?: Buffer
+): string {
+  const ext =
+    format === "image" && data ? imageExtension(data) : DEFAULT_EXTENSIONS[format];
+  return `${filenameStem(outputId)}${ext}`;
+}
+
+/** Prefer .svg when payload looks like vector markup (OpenRouter Recraft vector, etc.). */
+function imageExtension(data: Buffer): string {
+  const head = data
+    .subarray(0, Math.min(data.length, 256))
+    .toString("utf8")
+    .trimStart()
+    .toLowerCase();
+  if (head.startsWith("<svg") || head.startsWith("<?xml")) return ".svg";
+  return DEFAULT_EXTENSIONS.image;
 }
 
 function filenameStem(outputId?: string): string {
@@ -70,7 +87,7 @@ export async function writeOutput(
     if (isDirectory(effectiveOutput)) {
       filePath = join(
         effectiveOutput,
-        addSuffix(defaultFilename(format, outputId), suffix)
+        addSuffix(defaultFilename(format, outputId, buf), suffix)
       );
     } else {
       filePath = addSuffix(effectiveOutput, suffix);
@@ -88,7 +105,7 @@ export async function writeOutput(
     return null;
   }
 
-  const filename = addSuffix(defaultFilename(format, outputId), suffix);
+  const filename = addSuffix(defaultFilename(format, outputId, buf), suffix);
   const path = resolve(filename);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, buf);

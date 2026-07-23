@@ -111,7 +111,7 @@ export function registerImageCommand(program: Command) {
       const aspectRatio = opts.aspectRatio
         ? parseAspectRatio(opts.aspectRatio)
         : undefined;
-      const provOpts = buildProviderOptions(opts);
+      const provOpts = buildProviderOptions(opts, provider);
 
       if (
         (opts.quality || opts.style) &&
@@ -219,13 +219,15 @@ export function registerImageCommand(program: Command) {
 }
 
 function buildProviderOptions(
-  opts: ImageOptions
+  opts: ImageOptions,
+  provider: ReturnType<typeof resolveProvider>
 ): Record<string, Record<string, string>> {
-  const providerOptions: Record<string, Record<string, string>> = {};
-  if (opts.quality || opts.style) {
-    providerOptions.openai = {};
-    if (opts.quality) providerOptions.openai.quality = opts.quality;
-    if (opts.style) providerOptions.openai.style = opts.style;
-  }
-  return providerOptions;
+  if (!opts.quality && !opts.style) return {};
+  const flags: Record<string, string> = {};
+  if (opts.quality) flags.quality = opts.quality;
+  if (opts.style) flags.style = opts.style;
+  // Gateway image models read openai.*; OpenRouter imageModel merges openrouter.*.
+  return provider === "openrouter"
+    ? { openrouter: flags }
+    : { openai: flags };
 }

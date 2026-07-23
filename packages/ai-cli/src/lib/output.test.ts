@@ -77,4 +77,22 @@ describe("writeOutput", () => {
       expect(readFileSync(path!, "utf8")).toBe("hello");
     });
   });
+
+  test("uses .svg extension for SVG image payloads", async () => {
+    await withTempDir(async (dir) => {
+      const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
+      const path = await writeOutput({
+        data: svg,
+        format: "image",
+        outputPath: dir,
+        outputId: "vector_1",
+        quiet: true,
+        display: false,
+      });
+
+      expect(path).not.toBeNull();
+      expect(basename(path!)).toBe("vector_1.svg");
+      expect(readFileSync(path!)).toEqual(svg);
+    });
+  });
 });

@@ -80,7 +80,7 @@ describe("resolveModels", () => {
         "openai/gpt-5-image-mini",
       ]);
       expect(resolveModels("video", undefined, undefined, "openrouter")).toEqual([
-        "openrouter/auto",
+        "bytedance/seedance-2.0",
       ]);
     } finally {
       if (prev.text === undefined) delete process.env.AI_CLI_TEXT_MODEL;
@@ -337,30 +337,62 @@ describe("fetchGatewayModels", () => {
 });
 
 describe("fetchModels openrouter", () => {
-  test("partitions OpenRouter models by output modality", async () => {
-    mockGateway([
-      {
-        id: "openai/gpt-5",
-        name: "GPT 5",
-        description: "Text model",
-        architecture: { output_modalities: ["text"] },
-        pricing: { prompt: "0.000001", completion: "0.00001" },
-      },
-      {
-        id: "google/gemini-flash-image",
-        name: "Gemini Flash Image",
-        architecture: { output_modalities: ["text", "image"] },
-        pricing: { image: "0.03" },
-      },
-      {
-        id: "vendor/video-model",
-        architecture: { output_modalities: ["video"] },
-      },
-      {
-        id: "vendor/embedding",
-        architecture: { output_modalities: ["embedding"] },
-      },
-    ]);
+  function mockOpenRouterCatalogs(opts: {
+    models?: Record<string, unknown>[];
+    images?: Record<string, unknown>[];
+    videos?: Record<string, unknown>[];
+  }) {
+    globalThis.fetch = mock((input: RequestInfo | URL) => {
+      const url = String(input);
+      let data: Record<string, unknown>[] = [];
+      if (url.includes("/images/models")) data = opts.images ?? [];
+      else if (url.includes("/videos/models")) data = opts.videos ?? [];
+      else data = opts.models ?? [];
+      return Promise.resolve(
+        new Response(JSON.stringify({ data }), { status: 200 })
+      );
+    }) as unknown as typeof fetch;
+  }
+
+  test("merges general, image, and video OpenRouter catalogs", async () => {
+    mockOpenRouterCatalogs({
+      models: [
+        {
+          id: "openai/gpt-5",
+          name: "GPT 5",
+          description: "Text model",
+          architecture: { output_modalities: ["text"] },
+          pricing: { prompt: "0.000001", completion: "0.00001" },
+        },
+        {
+          id: "google/gemini-flash-image",
+          name: "Gemini Flash Image",
+          architecture: { output_modalities: ["text", "image"] },
+          pricing: { image: "0.03" },
+        },
+        {
+          id: "vendor/embedding",
+          architecture: { output_modalities: ["embedding"] },
+        },
+      ],
+      images: [
+        {
+          id: "openai/gpt-image-1",
+          name: "GPT Image 1",
+          architecture: { output_modalities: ["image"] },
+        },
+        {
+          id: "google/gemini-flash-image",
+          architecture: { output_modalities: ["image"] },
+        },
+      ],
+      videos: [
+        {
+          id: "bytedance/seedance-2.0",
+          name: "Seedance 2.0",
+        },
+      ],
+    });
 
     const result = await fetchModels("openrouter");
 
@@ -368,24 +400,23 @@ describe("fetchModels openrouter", () => {
       "openai/gpt-5",
       "google/gemini-flash-image",
     ]);
-    expect(result.image.map((m) => m.id)).toEqual([
+    expect(result.image.map((m) => m.id).sort()).toEqual([
       "google/gemini-flash-image",
+      "openai/gpt-image-1",
     ]);
-    expect(result.video.map((m) => m.id)).toEqual(["vendor/video-model"]);
-    expect(result.all).toHaveLength(3);
+    expect(result.video.map((m) => m.id)).toEqual(["bytedance/seedance-2.0"]);
+    expect(result.all).toHaveLength(4);
 
     expect(result.text[0].creator).toBe("openai");
     expect(result.text[0].pricing).toEqual({
       input: "0.000001",
       output: "0.00001",
     });
-    expect(result.image[0].pricing).toEqual({ image: "0.03" });
-    expect(result.languageImageModelIds.has("google/gemini-flash-image")).toBe(
-      true
-    );
+    // Dedicated imageModel path — do not route via generateText language-image.
+    expect(result.languageImageModelIds.size).toBe(0);
   });
 
-  test("returns empty lists on OpenRouter error", async () => {
+  test("returns empty lists when all OpenRouter catalogs fail", async () => {
     mockGatewayError();
 
     const result = await fetchModels("openrouter");

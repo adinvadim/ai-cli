@@ -49,7 +49,7 @@ ai text --provider gateway "hello"
 | --- | --- | --- | --- |
 | text | `openai/gpt-5.5` | `openai/gpt-5-mini` | `AI_CLI_TEXT_MODEL` |
 | image | `openai/gpt-image-2` | `openai/gpt-5-image-mini` | `AI_CLI_IMAGE_MODEL` |
-| video | `bytedance/seedance-2.0` | `openrouter/auto` | `AI_CLI_VIDEO_MODEL` |
+| video | `bytedance/seedance-2.0` | `bytedance/seedance-2.0` | `AI_CLI_VIDEO_MODEL` |
 
 ## Usage
 

@@ -4,7 +4,7 @@
 
 ### New Features
 
-- **OpenRouter provider** — added `--provider openrouter` and `AI_CLI_PROVIDER=openrouter` support using `OPENROUTER_API_KEY`. Auto-selects OpenRouter when only `OPENROUTER_API_KEY` is set (no `AI_GATEWAY_API_KEY`). Per-provider default models: text `openai/gpt-5-mini`, image `openai/gpt-5-image-mini`, video `openrouter/auto`.
+- **OpenRouter provider** — added `--provider openrouter` and `AI_CLI_PROVIDER=openrouter` support using `OPENROUTER_API_KEY`. Auto-selects OpenRouter when only `OPENROUTER_API_KEY` is set (no `AI_GATEWAY_API_KEY`). Per-provider default models: text `openai/gpt-5-mini`, image `openai/gpt-5-image-mini`, video `bytedance/seedance-2.0`.
 
 ## 0.3.1
 

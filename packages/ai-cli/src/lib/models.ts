@@ -11,12 +11,15 @@ const PROVIDER_DEFAULTS: Record<ProviderName, Record<Modality, string>> = {
   openrouter: {
     text: "openai/gpt-5-mini",
     image: "openai/gpt-5-image-mini",
-    video: "openrouter/auto",
+    // openrouter/auto is chat-only; use a real video model from /videos/models
+    video: "bytedance/seedance-2.0",
   },
 };
 
 const GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+const OPENROUTER_IMAGE_MODELS_URL = "https://openrouter.ai/api/v1/images/models";
+const OPENROUTER_VIDEO_MODELS_URL = "https://openrouter.ai/api/v1/videos/models";
 const GATEWAY_TIMEOUT_MS = 5_000;
 
 export interface ModelPricing {
@@ -189,53 +192,57 @@ async function fetchOpenRouterModels(): Promise<GatewayModels> {
     image: [],
     video: [],
     all: [],
+    // OpenRouter image models use the dedicated imageModel API (/images), not
+    // generateText language-image routing (modalities differ from Gateway).
     languageImageModelIds: new Set(),
   };
 
+  const entryMap = new Map<string, ModelEntry>();
+
   try {
-    const res = await fetch(OPENROUTER_MODELS_URL, {
-      signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = (await res.json()) as { data?: RawOpenRouterModel[] };
-    const models = json.data ?? [];
+    const settled = await Promise.allSettled([
+      fetchOpenRouterCatalog(OPENROUTER_MODELS_URL),
+      fetchOpenRouterCatalog(OPENROUTER_IMAGE_MODELS_URL),
+      fetchOpenRouterCatalog(OPENROUTER_VIDEO_MODELS_URL),
+    ]);
 
-    for (const m of models) {
-      const outputs = m.architecture?.output_modalities ?? [];
-      const capabilities: Modality[] = [];
+    const [general, images, videos] = settled.map((item) =>
+      item.status === "fulfilled" ? item.value : null
+    );
 
-      if (outputs.includes("text")) capabilities.push("text");
-      if (outputs.includes("image")) capabilities.push("image");
-      if (outputs.includes("video")) capabilities.push("video");
-      if (capabilities.length === 0) continue;
+    if (!general && !images && !videos) {
+      throw new Error("all OpenRouter model catalogs failed");
+    }
 
-      const creator = m.id.slice(0, Math.max(0, m.id.indexOf("/"))) || "other";
-      const pricing: ModelPricing | undefined =
-        m.pricing?.prompt || m.pricing?.completion || m.pricing?.image
-          ? {
-              ...(m.pricing.prompt ? { input: m.pricing.prompt } : {}),
-              ...(m.pricing.completion ? { output: m.pricing.completion } : {}),
-              ...(m.pricing.image ? { image: m.pricing.image } : {}),
-            }
-          : undefined;
-
-      const entry: ModelEntry = {
-        id: m.id,
-        name: m.name,
-        description: m.description,
-        creator,
-        capabilities,
-        pricing,
-      };
-
-      result.all.push(entry);
-      if (capabilities.includes("text")) result.text.push(entry);
-      if (capabilities.includes("image")) result.image.push(entry);
-      if (capabilities.includes("video")) result.video.push(entry);
-
-      if (capabilities.includes("text") && capabilities.includes("image")) {
-        result.languageImageModelIds.add(m.id);
+    if (general) {
+      for (const m of general) {
+        const outputs = m.architecture?.output_modalities ?? [];
+        const capabilities: Modality[] = [];
+        if (outputs.includes("text")) capabilities.push("text");
+        if (outputs.includes("image")) capabilities.push("image");
+        if (outputs.includes("video")) capabilities.push("video");
+        if (capabilities.length === 0) continue;
+        upsertOpenRouterEntry(entryMap, m, capabilities);
       }
+    }
+
+    if (images) {
+      for (const m of images) {
+        upsertOpenRouterEntry(entryMap, m, ["image"]);
+      }
+    }
+
+    if (videos) {
+      for (const m of videos) {
+        upsertOpenRouterEntry(entryMap, m, ["video"]);
+      }
+    }
+
+    for (const entry of entryMap.values()) {
+      result.all.push(entry);
+      if (entry.capabilities.includes("text")) result.text.push(entry);
+      if (entry.capabilities.includes("image")) result.image.push(entry);
+      if (entry.capabilities.includes("video")) result.video.push(entry);
     }
   } catch {
     cached.delete("openrouter");
@@ -243,6 +250,56 @@ async function fetchOpenRouterModels(): Promise<GatewayModels> {
   }
 
   return result;
+}
+
+async function fetchOpenRouterCatalog(
+  url: string
+): Promise<RawOpenRouterModel[]> {
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  const json = (await res.json()) as { data?: RawOpenRouterModel[] };
+  return json.data ?? [];
+}
+
+function upsertOpenRouterEntry(
+  entryMap: Map<string, ModelEntry>,
+  raw: RawOpenRouterModel,
+  addCapabilities: Modality[]
+): void {
+  const existing = entryMap.get(raw.id);
+  const creator =
+    raw.id.slice(0, Math.max(0, raw.id.indexOf("/"))) || "other";
+  const pricing: ModelPricing | undefined =
+    raw.pricing?.prompt || raw.pricing?.completion || raw.pricing?.image
+      ? {
+          ...(raw.pricing.prompt ? { input: raw.pricing.prompt } : {}),
+          ...(raw.pricing.completion ? { output: raw.pricing.completion } : {}),
+          ...(raw.pricing.image ? { image: raw.pricing.image } : {}),
+        }
+      : undefined;
+
+  if (!existing) {
+    entryMap.set(raw.id, {
+      id: raw.id,
+      name: raw.name,
+      description: raw.description,
+      creator,
+      capabilities: [...new Set(addCapabilities)],
+      pricing,
+    });
+    return;
+  }
+
+  const caps = new Set(existing.capabilities);
+  for (const c of addCapabilities) caps.add(c);
+  existing.capabilities = [...caps];
+  if (!existing.name && raw.name) existing.name = raw.name;
+  if (!existing.description && raw.description) {
+    existing.description = raw.description;
+  }
+  if (!existing.pricing && pricing) existing.pricing = pricing;
 }
 
 export function resolveModels(

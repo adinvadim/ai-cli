@@ -24,6 +24,33 @@ ai login
 
 `ai login` opens the [API keys page](https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys), checks the key you paste, and saves it to `~/.config/ai-cli/auth.json`. You can also pipe it in (`echo "$KEY" | ai login`) or set `AI_GATEWAY_API_KEY`, which takes priority. `ai logout` deletes the saved key.
 
+## Providers
+
+`text`, `image`, `video`, and `models` can use a provider other than AI Gateway. Select one with `--provider <name>` or `AI_CLI_PROVIDER`:
+
+| Provider | Credentials | Text | Image | Video |
+|---|---|---|---|---|
+| `gateway` (default) | `ai login` or `AI_GATEWAY_API_KEY` | yes | yes | yes |
+| `openrouter` | `OPENROUTER_API_KEY` | yes | yes | yes (blocking `ai video` only) |
+| `codex` | Your local `codex login` (ChatGPT) | no | yes | no |
+| `grok` | Your local `grok login` (grok.com subscription), else `XAI_API_KEY` | yes | yes | yes |
+
+```bash
+ai image "a red fox in snow" --provider codex
+ai image "give the fox a hat" --provider codex -i fox.png
+ai image "a red fox in snow" --provider grok
+ai video "a fox walking through snow" --provider grok --duration 5
+AI_CLI_PROVIDER=openrouter ai text "explain quantum computing"
+```
+
+Without `--provider` or `AI_CLI_PROVIDER`, ai-cli uses OpenRouter when `OPENROUTER_API_KEY` is the only configured key, and AI Gateway otherwise.
+
+- **codex** reuses the ChatGPT login saved by the [Codex CLI](https://github.com/openai/codex) in `$CODEX_HOME/auth.json` (default `~/.codex`), so no separate API key is needed. It calls the same image endpoint as Codex's built-in image tool with `gpt-image-2`. When the access token is about to expire, ai-cli refreshes it the way Codex does and writes the new tokens back, so running Codex sessions keep working. Reference images (`-i`, up to 5) select an edit. Codex chooses image dimensions from the prompt, so describe the shape there; `--size` and `--aspect-ratio` produce an unsupported-setting warning. `--mask` is not supported. Pass `quality` or `background` with `--provider-options` under the `codex` key.
+- **grok** reuses the session saved by the Grok CLI (`grok login`) in `$GROK_HOME/auth.json` (default `~/.grok`) and sends requests to the grok.com subscription proxy that Grok's own `/imagine` and `/imagine-video` use. When the session is close to expiry, ai-cli runs `grok models` so the Grok CLI renews its own login, then reads the new token. Without a Grok login, it uses `XAI_API_KEY` against the xAI API. Image models are `grok-imagine-image` and `grok-imagine-image-pro`; the video model is `grok-imagine-video`, which also supports `ai video start` and `ai video status`.
+- **openrouter** uses the [OpenRouter AI SDK provider](https://github.com/OpenRouterTeam/ai-sdk-provider) and its `/models`, `/images/models`, and `/videos/models` catalogs.
+
+`codex` and `grok` accept Gateway-style IDs such as `openai/gpt-image-2` and `xai/grok-imagine-image`. `decide` and `audio` always use AI Gateway. Gateway connection flags (`--base-url`, `--scope`, `--team-id-or-slug`) are rejected for other providers.
+
 ## Usage
 
 ```bash
@@ -58,6 +85,7 @@ Generation commands support:
 
 ```
 -m, --model <id>         Model ID (creator/model-name), comma-separated for multi-model
+--provider <name>        gateway, openrouter, codex, or grok (text, image, video, models)
 -o, --output <path>      Output file path or directory
 -n, --n <n>              Image/video outputs per model (default: 1)
 -n, --count <n>          Text/audio generations per model (default: 1)
@@ -559,8 +587,10 @@ tools. Add it to your MCP client with your Vercel AI Gateway API key:
 ```
 
 Set `AI_GATEWAY_TEAM_ID_OR_SLUG` in the server environment to select a Gateway
-team. Tools reject `--scope` and other Gateway connection flags, including in
-`extraArgs`.
+team, and `AI_CLI_PROVIDER` to select a provider. Tools reject `--provider`,
+`--scope`, and other connection flags, including in `extraArgs`, so an agent
+cannot switch to your Codex or Grok login. `video_status` also keeps the
+server's provider and rejects operation files that name a different one.
 
 See [MCP](https://ai-cli.dev/docs/mcp) for configuring MCP clients, profiles, and tools.
 
@@ -600,6 +630,11 @@ When the CLI needs to choose a filename, it uses a response id when available an
 | `AI_GATEWAY_API_KEY` | AI Gateway API key; takes priority over `ai login` |
 | `AI_GATEWAY_BASE_URL` | Gateway baseURL for decide, image/video generation, and model discovery; overridden by `--base-url` |
 | `AI_GATEWAY_TEAM_ID_OR_SLUG` | Gateway team for decide, image/video, and models; overridden by `--scope` |
+| `AI_CLI_PROVIDER` | Default provider: `gateway`, `openrouter`, `codex`, or `grok`; overridden by `--provider` |
+| `OPENROUTER_API_KEY` | OpenRouter API key for `--provider openrouter` |
+| `XAI_API_KEY` | xAI API key for `--provider grok` when there is no `grok login` session |
+| `CODEX_HOME` | Codex CLI home with `auth.json` (default: `~/.codex`) |
+| `GROK_HOME` | Grok CLI home with `auth.json` and `bin/grok` (default: `~/.grok`) |
 | `AI_CLI_TEXT_MODEL` | Default text model (overrides `openai/gpt-5.5`) |
 | `AI_CLI_IMAGE_MODEL` | Default image model (overrides `openai/gpt-image-2`) |
 | `AI_CLI_VIDEO_MODEL` | Default video model (overrides `bytedance/seedance-2.0`) |
@@ -611,7 +646,7 @@ When the CLI needs to choose a filename, it uses a response id when available an
 | `NO_COLOR` | Disable ANSI color output |
 | `FORCE_COLOR` | Force color output even when not a TTY |
 
-The `-m` flag always takes priority over `AI_CLI_*_MODEL` env vars. The `-o` flag always takes priority over `AI_CLI_OUTPUT_DIR`.
+The `-m` flag always takes priority over `AI_CLI_*_MODEL` env vars. `AI_CLI_*_MODEL` set defaults for the default provider; when `--provider` selects a different one, that provider's own defaults apply. The `-o` flag always takes priority over `AI_CLI_OUTPUT_DIR`.
 
 ### Timeouts
 

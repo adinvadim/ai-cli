@@ -21,7 +21,16 @@ Use when you need to:
 
 ## Prerequisites
 
-Requires an AI Gateway API key, saved with `ai login` or set as `AI_GATEWAY_API_KEY`.
+Requires an AI Gateway API key, saved with `ai login` or set as `AI_GATEWAY_API_KEY`,
+or another provider for `text`, `image`, `video`, and `models`:
+
+```bash
+ai image "a fox" --provider codex   # local `codex login` (ChatGPT), images only
+ai video "a fox" --provider grok    # local `grok login` (grok.com subscription)
+ai text "hi" --provider openrouter  # OPENROUTER_API_KEY
+```
+
+`AI_CLI_PROVIDER` sets the default. `decide` and `audio` always use AI Gateway.
 
 ## Commands
 
@@ -56,6 +65,7 @@ For image and video, use these flags:
 --provider-options <path> JSON provider settings and Gateway routing
 --seed <integer>       Generation seed, including 0
 --max-retries <n>      SDK retries (default: 2)
+--provider <name>      gateway, openrouter, codex, or grok
 ```
 
 Text and audio still use `-n, --count`, not `--n`. `--quiet`, `--json`,

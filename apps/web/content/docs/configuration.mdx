@@ -19,6 +19,21 @@ and structured media inputs. There is no global config file.
   <Property name="AI_GATEWAY_TEAM_ID_OR_SLUG" type="string">
     Gateway teamIdOrSlug for decide, image/video, and models. Override with `--scope`.
   </Property>
+  <Property name="AI_CLI_PROVIDER" type="gateway | openrouter | codex | grok">
+    Default provider for text, image, video, and models. Override with `--provider`. See [Providers](/docs/providers).
+  </Property>
+  <Property name="OPENROUTER_API_KEY" type="string">
+    OpenRouter API key for `--provider openrouter`.
+  </Property>
+  <Property name="XAI_API_KEY" type="string">
+    xAI API key for `--provider grok` when there is no `grok login` session.
+  </Property>
+  <Property name="CODEX_HOME" type="path">
+    Codex CLI home containing `auth.json`. Defaults to `~/.codex`.
+  </Property>
+  <Property name="GROK_HOME" type="path">
+    Grok CLI home containing `auth.json` and `bin/grok`. Defaults to `~/.grok`.
+  </Property>
   <Property name="AI_CLI_TEXT_MODEL" type="string">
     Default text model. Overrides `openai/gpt-5.5`.
   </Property>
@@ -54,6 +69,7 @@ and structured media inputs. There is no global config file.
 ## Precedence
 
 - `-m` flag always takes priority over `AI_CLI_*_MODEL` env vars.
+- `--provider` takes priority over `AI_CLI_PROVIDER`. `AI_CLI_*_MODEL` apply to the default provider only.
 - `-o` flag always takes priority over `AI_CLI_OUTPUT_DIR`.
 - `--no-preview` takes priority over `AI_CLI_PREVIEW`.
 

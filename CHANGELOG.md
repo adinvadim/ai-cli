@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### New Features
+
+- Add `--provider` and `AI_CLI_PROVIDER` for `text`, `image`, `video`, and `models`, with `gateway` (default), `openrouter`, `codex`, and `grok`. ai-cli selects OpenRouter automatically when `OPENROUTER_API_KEY` is the only configured key.
+- Add the `openrouter` provider. It uses `OPENROUTER_API_KEY` and lists models from OpenRouter's chat, image, and video catalogs.
+- Add the `codex` provider. It generates and edits images with `gpt-image-2` through your local `codex login`, with no API key, and refreshes the login the way Codex does.
+- Add the `grok` provider. It generates text, images, and video through your local `grok login` on the grok.com subscription, including `ai video start` and `ai video status`, and falls back to `XAI_API_KEY`.
+
+### Improvements
+
+- `AI_CLI_*_MODEL` defaults apply to the default provider only, so an explicit `--provider` uses that provider's own defaults.
+- `ai video start` records the provider in the operation file, and `ai video status` uses it.
+- `ai mcp` rejects `--provider` from agents. Set `AI_CLI_PROVIDER` in the server environment.
+
 ## 0.9.1
 
 <!-- release:start -->

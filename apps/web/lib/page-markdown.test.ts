@@ -102,10 +102,11 @@ describe("docs page list", () => {
   test("lists docs in sidebar order", async () => {
     const docs = await publicDocs();
 
-    expect(docs.slice(0, 4).map((doc) => doc.slug)).toEqual([
+    expect(docs.slice(0, 5).map((doc) => doc.slug)).toEqual([
       "",
       "installation",
       "configuration",
+      "providers",
       "commands",
     ]);
   });

@@ -1,126 +1,204 @@
-import type { ProviderName } from "./providers.js";
+export type Modality =
+  | "text"
+  | "image"
+  | "video"
+  | "speech"
+  | "transcription"
+  | "evaluation";
 
-export type Modality = "text" | "image" | "video";
-
-const PROVIDER_DEFAULTS: Record<ProviderName, Record<Modality, string>> = {
-  gateway: {
-    text: "openai/gpt-5.5",
-    image: "openai/gpt-image-2",
-    video: "bytedance/seedance-2.0",
-  },
-  openrouter: {
-    text: "openai/gpt-5-mini",
-    image: "openai/gpt-5-image-mini",
-    // openrouter/auto is chat-only; use a real video model from /videos/models
-    video: "bytedance/seedance-2.0",
-  },
+const BUILTIN_DEFAULTS: Record<Modality, string> = {
+  text: "openai/gpt-5.5",
+  image: "openai/gpt-image-2",
+  video: "bytedance/seedance-2.0",
+  speech: "openai/tts-1",
+  transcription: "openai/whisper-1",
+  evaluation: "typesafe-ai/jev",
 };
 
+const DEFAULT_ENV: Record<Modality, string> = {
+  text: "AI_CLI_TEXT_MODEL",
+  image: "AI_CLI_IMAGE_MODEL",
+  video: "AI_CLI_VIDEO_MODEL",
+  speech: "AI_CLI_SPEECH_MODEL",
+  transcription: "AI_CLI_TRANSCRIPTION_MODEL",
+  evaluation: "AI_CLI_EVALUATION_MODEL",
+};
+
+/** Default models from AI_CLI_*_MODEL; they describe the default provider. */
+export function envModelDefaults(): Partial<Record<Modality, string>> {
+  const defaults: Partial<Record<Modality, string>> = {};
+  for (const [modality, name] of Object.entries(DEFAULT_ENV))
+    if (process.env[name]) defaults[modality as Modality] = process.env[name];
+  return defaults;
+}
+
+/** The provider's default for a modality, else the AI Gateway default. */
+export function defaultModel(
+  modality: Modality,
+  defaults: Partial<Record<Modality, string>> = envModelDefaults()
+): string {
+  return defaults[modality] || BUILTIN_DEFAULTS[modality];
+}
+
 const GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
-const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
-const OPENROUTER_IMAGE_MODELS_URL = "https://openrouter.ai/api/v1/images/models";
-const OPENROUTER_VIDEO_MODELS_URL = "https://openrouter.ai/api/v1/videos/models";
 const GATEWAY_TIMEOUT_MS = 5_000;
+
+export interface ModelEndpoint {
+  provider_name?: string;
+  context_length?: number;
+  max_completion_tokens?: number;
+  pricing?: {
+    prompt?: string;
+    completion?: string;
+    input_cache_read?: string;
+    input_cache_write?: string;
+    web_search?: string;
+    [key: string]: unknown;
+  };
+  tags?: string[];
+  uptime_last_1d?: number;
+  latency_last_1h?: { p50?: number; p95?: number };
+  throughput_last_1h?: { p50?: number; p95?: number };
+}
+
+export interface ModelEndpointsInfo {
+  id: string;
+  name?: string;
+  description?: string;
+  released?: number;
+  endpoints: ModelEndpoint[];
+}
 
 export interface ModelPricing {
   input?: string;
   output?: string;
   image?: string;
+  [key: string]: unknown;
 }
 
 export interface ModelEntry {
+  [key: string]: unknown;
   id: string;
   name?: string;
   description?: string;
   creator: string;
   capabilities: Modality[];
   pricing?: ModelPricing;
+  contextWindow?: number;
+  maxTokens?: number;
+  released?: number;
+  tags?: string[];
 }
 
 export interface GatewayModels {
+  available: boolean;
   text: ModelEntry[];
   image: ModelEntry[];
   video: ModelEntry[];
+  speech: ModelEntry[];
+  transcription: ModelEntry[];
+  evaluation: ModelEntry[];
+  /** Models with a modality supported by the CLI. */
   all: ModelEntry[];
+  /** Every gateway model, including types the CLI cannot generate with
+   * (embedding, realtime, reranking, ...). */
+  lookup: ModelEntry[];
   languageImageModelIds: Set<string>;
 }
 
 interface RawGatewayModel {
+  [key: string]: unknown;
   id: string;
   name?: string;
   description?: string;
   owned_by?: string;
   type?: string;
   tags?: string[];
+  context_window?: number;
+  max_tokens?: number;
+  released?: number;
   pricing?: {
-    input?: string;
-    output?: string;
-    image?: string;
+    [key: string]: unknown;
   };
 }
 
-interface RawOpenRouterModel {
-  id: string;
-  name?: string;
-  description?: string;
-  architecture?: {
-    output_modalities?: string[];
-  };
-  pricing?: {
-    prompt?: string;
-    completion?: string;
-    image?: string;
-  };
-}
+let cached: Promise<GatewayModels> | null = null;
 
-const cached = new Map<ProviderName, Promise<GatewayModels>>();
-
-export function fetchGatewayModels(): Promise<GatewayModels> {
-  return fetchModels("gateway");
-}
-
-export function fetchModels(provider: ProviderName): Promise<GatewayModels> {
-  const existing = cached.get(provider);
-  if (existing) return existing;
-
-  const next = doFetch(provider).catch((err) => {
-    cached.delete(provider);
-    throw err;
-  });
-  cached.set(provider, next);
-  return next;
-}
-
-export function resetGatewayCache(): void {
-  cached.delete("gateway");
-}
-
-export function resetModelsCache(): void {
-  cached.clear();
-}
-
-async function doFetch(provider: ProviderName): Promise<GatewayModels> {
-  return provider === "openrouter"
-    ? fetchOpenRouterModels()
-    : fetchAiGatewayModels();
-}
-
-async function fetchAiGatewayModels(): Promise<GatewayModels> {
-  const result: GatewayModels = {
+function emptyGatewayModels(): GatewayModels {
+  return {
+    available: false,
     text: [],
     image: [],
     video: [],
+    speech: [],
+    transcription: [],
+    evaluation: [],
     all: [],
+    lookup: [],
     languageImageModelIds: new Set(),
   };
+}
+
+function isRawGatewayModel(value: unknown): value is RawGatewayModel {
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const model = value as Record<string, unknown>;
+  return (
+    typeof model.id === "string" &&
+    model.id.length > 0 &&
+    typeof model.type === "string" &&
+    (model.owned_by == null || typeof model.owned_by === "string") &&
+    (model.tags == null ||
+      (Array.isArray(model.tags) &&
+        model.tags.every((tag) => typeof tag === "string")))
+  );
+}
+
+export function fetchGatewayModels(options?: {
+  baseURL?: string;
+  headers?: Record<string, string>;
+}): Promise<GatewayModels> {
+  if (options) return doFetch(options);
+  if (!cached) {
+    cached = doFetch().catch((err) => {
+      cached = null;
+      throw err;
+    });
+  }
+  return cached;
+}
+
+export function resetGatewayCache(): void {
+  cached = null;
+}
+
+async function doFetch(options?: {
+  baseURL?: string;
+  headers?: Record<string, string>;
+}): Promise<GatewayModels> {
+  const result = emptyGatewayModels();
 
   try {
-    const res = await fetch(GATEWAY_MODELS_URL, {
-      signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
-    });
+    const res = await fetch(
+      options?.baseURL
+        ? new URL("/v1/models", options.baseURL)
+        : GATEWAY_MODELS_URL,
+      {
+        headers: options?.headers,
+        signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
+      }
+    );
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = (await res.json()) as { data?: RawGatewayModel[] };
-    const models = json.data ?? [];
+    const json: unknown = await res.json();
+    if (
+      json === null ||
+      typeof json !== "object" ||
+      !("data" in json) ||
+      !Array.isArray(json.data) ||
+      !json.data.every(isRawGatewayModel)
+    )
+      throw new Error("Invalid AI Gateway model catalog");
+    const models: RawGatewayModel[] = json.data;
 
     const entryMap = new Map<string, ModelEntry>();
 
@@ -140,30 +218,37 @@ async function fetchAiGatewayModels(): Promise<GatewayModels> {
         case "video":
           capabilities.push("video");
           break;
+        case "speech":
+          capabilities.push("speech");
+          break;
+        case "transcription":
+          capabilities.push("transcription");
+          break;
+        case "evaluation":
+          capabilities.push("evaluation");
+          break;
         default:
-          continue;
+          break;
       }
 
       const creator =
         m.owned_by ??
         (m.id.slice(0, Math.max(0, m.id.indexOf("/"))) || "other");
 
-      const pricing: ModelPricing | undefined =
-        m.pricing?.input || m.pricing?.output || m.pricing?.image
-          ? {
-              ...(m.pricing.input ? { input: m.pricing.input } : {}),
-              ...(m.pricing.output ? { output: m.pricing.output } : {}),
-              ...(m.pricing.image ? { image: m.pricing.image } : {}),
-            }
-          : undefined;
+      const pricing = normalizePricing(m.pricing);
 
       const entry: ModelEntry = {
+        ...m,
         id: m.id,
         name: m.name,
         description: m.description,
         creator,
         capabilities,
         pricing,
+        contextWindow: m.context_window,
+        maxTokens: m.max_tokens,
+        released: m.released,
+        tags: tags.length > 0 ? tags : undefined,
       };
 
       entryMap.set(m.id, entry);
@@ -171,168 +256,109 @@ async function fetchAiGatewayModels(): Promise<GatewayModels> {
       if (capabilities.includes("text")) result.text.push(entry);
       if (capabilities.includes("image")) result.image.push(entry);
       if (capabilities.includes("video")) result.video.push(entry);
+      if (capabilities.includes("speech")) result.speech.push(entry);
+      if (capabilities.includes("transcription"))
+        result.transcription.push(entry);
+      if (capabilities.includes("evaluation")) result.evaluation.push(entry);
 
       if (m.type === "language" && isImageGen) {
         result.languageImageModelIds.add(m.id);
       }
     }
 
-    result.all = [...entryMap.values()];
+    result.lookup = [...entryMap.values()];
+    result.all = result.lookup.filter((e) => e.capabilities.length > 0);
+    result.available = true;
   } catch {
-    cached.delete("gateway");
+    cached = null;
     process.stderr.write("Warning: could not fetch models from AI Gateway\n");
+    return emptyGatewayModels();
   }
 
   return result;
 }
 
-async function fetchOpenRouterModels(): Promise<GatewayModels> {
-  const result: GatewayModels = {
-    text: [],
-    image: [],
-    video: [],
-    all: [],
-    // OpenRouter image models use the dedicated imageModel API (/images), not
-    // generateText language-image routing (modalities differ from Gateway).
-    languageImageModelIds: new Set(),
-  };
-
-  const entryMap = new Map<string, ModelEntry>();
-
+export async function fetchModelEndpoints(
+  modelId: string,
+  options?: { baseURL?: string; headers?: Record<string, string> }
+): Promise<ModelEndpointsInfo | null> {
   try {
-    const settled = await Promise.allSettled([
-      fetchOpenRouterCatalog(OPENROUTER_MODELS_URL),
-      fetchOpenRouterCatalog(OPENROUTER_IMAGE_MODELS_URL),
-      fetchOpenRouterCatalog(OPENROUTER_VIDEO_MODELS_URL),
-    ]);
-
-    const [general, images, videos] = settled.map((item) =>
-      item.status === "fulfilled" ? item.value : null
-    );
-
-    if (!general && !images && !videos) {
-      throw new Error("all OpenRouter model catalogs failed");
-    }
-
-    if (general) {
-      for (const m of general) {
-        const outputs = m.architecture?.output_modalities ?? [];
-        const capabilities: Modality[] = [];
-        if (outputs.includes("text")) capabilities.push("text");
-        if (outputs.includes("image")) capabilities.push("image");
-        if (outputs.includes("video")) capabilities.push("video");
-        if (capabilities.length === 0) continue;
-        upsertOpenRouterEntry(entryMap, m, capabilities);
-      }
-    }
-
-    if (images) {
-      for (const m of images) {
-        upsertOpenRouterEntry(entryMap, m, ["image"]);
-      }
-    }
-
-    if (videos) {
-      for (const m of videos) {
-        upsertOpenRouterEntry(entryMap, m, ["video"]);
-      }
-    }
-
-    for (const entry of entryMap.values()) {
-      result.all.push(entry);
-      if (entry.capabilities.includes("text")) result.text.push(entry);
-      if (entry.capabilities.includes("image")) result.image.push(entry);
-      if (entry.capabilities.includes("video")) result.video.push(entry);
-    }
-  } catch {
-    cached.delete("openrouter");
-    process.stderr.write("Warning: could not fetch models from OpenRouter\n");
-  }
-
-  return result;
-}
-
-async function fetchOpenRouterCatalog(
-  url: string
-): Promise<RawOpenRouterModel[]> {
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  const json = (await res.json()) as { data?: RawOpenRouterModel[] };
-  return json.data ?? [];
-}
-
-function upsertOpenRouterEntry(
-  entryMap: Map<string, ModelEntry>,
-  raw: RawOpenRouterModel,
-  addCapabilities: Modality[]
-): void {
-  const existing = entryMap.get(raw.id);
-  const creator =
-    raw.id.slice(0, Math.max(0, raw.id.indexOf("/"))) || "other";
-  const pricing: ModelPricing | undefined =
-    raw.pricing?.prompt || raw.pricing?.completion || raw.pricing?.image
-      ? {
-          ...(raw.pricing.prompt ? { input: raw.pricing.prompt } : {}),
-          ...(raw.pricing.completion ? { output: raw.pricing.completion } : {}),
-          ...(raw.pricing.image ? { image: raw.pricing.image } : {}),
-        }
-      : undefined;
-
-  if (!existing) {
-    entryMap.set(raw.id, {
-      id: raw.id,
-      name: raw.name,
-      description: raw.description,
-      creator,
-      capabilities: [...new Set(addCapabilities)],
-      pricing,
+    const modelsUrl = options?.baseURL
+      ? new URL("/v1/models", options.baseURL).href
+      : GATEWAY_MODELS_URL;
+    const res = await fetch(`${modelsUrl}/${modelId}/endpoints`, {
+      headers: options?.headers,
+      signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
     });
-    return;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = (await res.json()) as { data?: ModelEndpointsInfo };
+    if (!json.data) return null;
+    return { ...json.data, endpoints: json.data.endpoints ?? [] };
+  } catch {
+    process.stderr.write(
+      "Warning: could not fetch provider endpoints from AI Gateway\n"
+    );
+    return null;
   }
+}
 
-  const caps = new Set(existing.capabilities);
-  for (const c of addCapabilities) caps.add(c);
-  existing.capabilities = [...caps];
-  if (!existing.name && raw.name) existing.name = raw.name;
-  if (!existing.description && raw.description) {
-    existing.description = raw.description;
-  }
-  if (!existing.pricing && pricing) existing.pricing = pricing;
+function normalizePricing(
+  pricing?: Record<string, unknown>
+): ModelPricing | undefined {
+  if (!pricing) return undefined;
+
+  const entries = Object.entries(pricing).filter(
+    ([, value]) => value != null && value !== ""
+  );
+  if (entries.length === 0) return undefined;
+
+  return Object.fromEntries(entries) as ModelPricing;
 }
 
 export function resolveModels(
   modality: Modality,
   userModel?: string,
   knownModels?: Pick<ModelEntry, "id">[],
-  provider: ProviderName = "gateway"
+  defaults?: Partial<Record<Modality, string>>
 ): string[] {
-  if (!userModel) return [defaultModel(modality, provider)];
+  const fallback = () => [validateModelId(defaultModel(modality, defaults))];
+  if (!userModel) return fallback();
   const models = userModel
     .split(",")
     .map((m) => m.trim())
     .filter(Boolean)
-    .map((m) => expandModelId(m, knownModels));
-  return models.length > 0 ? models : [defaultModel(modality, provider)];
+    .map((m) => validateModelId(expandModelId(m, knownModels)));
+  return models.length > 0 ? models : fallback();
 }
 
-function defaultModel(modality: Modality, provider: ProviderName): string {
-  switch (modality) {
-    case "text":
-      return process.env.AI_CLI_TEXT_MODEL ?? PROVIDER_DEFAULTS[provider].text;
-    case "image":
-      return (
-        process.env.AI_CLI_IMAGE_MODEL ?? PROVIDER_DEFAULTS[provider].image
-      );
-    case "video":
-      return (
-        process.env.AI_CLI_VIDEO_MODEL ?? PROVIDER_DEFAULTS[provider].video
-      );
+/** Build a catalog from entries for providers without a Gateway-shaped model list. */
+export function catalogFromEntries(
+  entries: ModelEntry[],
+  available: boolean,
+  languageImageModelIds: Iterable<string> = []
+): GatewayModels {
+  const result = emptyGatewayModels();
+  result.available = available;
+  result.lookup = entries;
+  result.all = entries.filter((entry) => entry.capabilities.length > 0);
+  for (const entry of result.all)
+    for (const capability of entry.capabilities) result[capability].push(entry);
+  result.languageImageModelIds = new Set(languageImageModelIds);
+  return result;
+}
+
+function validateModelId(modelId: string): string {
+  // The Gateway SDK sends model IDs in an HTTP header. Validate before the SDK
+  // turns an invalid header value into a retried GatewayResponseError.
+  if (!/^[\x21-\x7e]+$/.test(modelId)) {
+    throw new Error(
+      `model ID must use printable ASCII characters without spaces (got ${JSON.stringify(modelId)})`
+    );
   }
+  return modelId;
 }
 
-function expandModelId(
+export function expandModelId(
   input: string,
   knownModels?: Pick<ModelEntry, "id">[]
 ): string {

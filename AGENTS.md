@@ -6,13 +6,13 @@ This is a Turborepo monorepo. The CLI application lives in `packages/ai-cli/` an
 
 ## Package Manager
 
-Use **bun** for all package management and script execution:
+Use **Node.js 24+** and **npm** for all package management and script execution:
 
-- `bun install` to install dependencies
-- `bun add <package>` to add a dependency (use `--cwd packages/ai-cli` to target the CLI package)
-- `bun add -d <package>` to add a dev dependency
-- `bun run <script>` to run package.json scripts
-- `bun test` to run tests
+- `npm ci` to install dependencies from the lockfile
+- `npm install <package>@<version>` to add a dependency (use `--workspace ai-cli` to target the CLI package)
+- `npm install -D <package>@<version>` to add a dev dependency
+- `npm run <script>` to run package.json scripts
+- `npm test` to run tests
 
 ## Installing Packages
 
@@ -22,18 +22,41 @@ Before installing any npm package, always check the latest version first:
 npm view <package> version
 ```
 
-Then install that specific version (e.g. `bun add --cwd packages/ai-cli <package>@<version>`). Never blindly install without verifying the latest version.
+Then install that specific version (e.g. `npm install --workspace ai-cli <package>@<version>`). Never blindly install without verifying the latest version.
 
 ## Documentation
 
-When making any user-facing change (new command, new flag, changed behavior, renamed option, etc.), update the documentation in `packages/ai-cli/README.md` in the same PR. A user-facing change without a docs update is incomplete.
+When making any user-facing change (new command, new flag, changed behavior, renamed option, release note, website copy change, etc.), update every relevant user-facing documentation surface in the same PR:
+
+- `packages/ai-cli/README.md` for the npm/package README
+- `apps/web/content/docs/` for website documentation (sidebar order in `meta.json`)
+- `apps/web/components/landing/` and other website copy when the landing page or marketing copy should reflect the change
+- `CHANGELOG.md` for release-facing changes
+
+A user-facing change without matching README and website/docs updates is incomplete.
+
+Use the `technical-writer` skill (`.agents/skills/technical-writer/SKILL.md`) when you write or edit prose for this repo, including docs pages, READMEs, changelog entries, commit messages, PR descriptions, and issues.
+
+## MCP tools
+
+`ai mcp` generates its tool schemas from the CLI command definitions, so most flag changes need no MCP edit. When adding a command, map it in `TOOL_OVERRIDES` or list it in `EXCLUDED_COMMANDS` in `packages/ai-cli/src/commands/mcp.ts`; add a flag that agents should not see to `HIDDEN_OPTIONS`. The sync test in `mcp.test.ts` fails until you do. Update `apps/web/content/docs/mcp.mdx` and the README MCP section in the same PR when tools change.
+
+## Releasing
+
+Releases are prepared in a single PR by bumping `packages/ai-cli/package.json` and
+adding the changelog entry at the top of `CHANGELOG.md`.
+
+Only the latest changelog entry should be wrapped in `<!-- release:start -->` and
+`<!-- release:end -->` markers. The release workflow extracts the content between
+those markers for the matching GitHub release, so remove the markers from the
+previous release when preparing a new one.
 
 ## Type Checking
 
 Run the type checker after every agent turn:
 
 ```sh
-bun run typecheck
+npm run typecheck
 ```
 
 This runs `turbo run typecheck` across all workspaces and ensures no type errors have been introduced. Fix any type errors before moving on.

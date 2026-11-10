@@ -8,13 +8,14 @@ import {
   displayVideoFrame,
 } from "./kitty.js";
 
-export type OutputFormat = "md" | "txt" | "image" | "video";
+export type OutputFormat = "md" | "txt" | "image" | "video" | "audio";
 
 const DEFAULT_EXTENSIONS: Record<OutputFormat, string> = {
   md: ".md",
   txt: ".txt",
   image: ".png",
   video: ".mp4",
+  audio: ".mp3",
 };
 
 export interface WriteOutputOptions {
@@ -23,6 +24,9 @@ export interface WriteOutputOptions {
   outputPath?: string;
   outputId?: string;
   suffix?: string;
+  extension?: string;
+  mediaType?: string;
+  forceFile?: boolean;
   quiet?: boolean;
   display?: boolean;
 }
@@ -30,48 +34,37 @@ export interface WriteOutputOptions {
 function defaultFilename(
   format: OutputFormat,
   outputId?: string,
-  data?: Buffer
+  extension?: string,
+  mediaType?: string
 ): string {
-  const ext =
-    format === "image" && data ? imageExtension(data) : DEFAULT_EXTENSIONS[format];
-  return `${filenameStem(outputId)}${ext}`;
+  return `${filenameStem(outputId)}${
+    extension ?? defaultExtension(format, mediaType)
+  }`;
 }
 
-/** Sniff common image payloads so OpenRouter (and others) get the right extension. */
-function imageExtension(data: Buffer): string {
-  if (data.length >= 8) {
-    // PNG
-    if (
-      data[0] === 0x89 &&
-      data[1] === 0x50 &&
-      data[2] === 0x4e &&
-      data[3] === 0x47
-    ) {
-      return ".png";
-    }
-    // JPEG
-    if (data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) {
-      return ".jpg";
-    }
-    // GIF
-    const gif = data.toString("ascii", 0, 6);
-    if (gif === "GIF87a" || gif === "GIF89a") return ".gif";
-    // WebP (RIFF....WEBP)
-    if (
-      data.toString("ascii", 0, 4) === "RIFF" &&
-      data.toString("ascii", 8, 12) === "WEBP"
-    ) {
-      return ".webp";
-    }
-  }
-  const head = data
-    .subarray(0, Math.min(data.length, 256))
-    .toString("utf8")
-    .trimStart()
-    .toLowerCase();
-  if (head.startsWith("<svg") || head.startsWith("<?xml")) return ".svg";
-  return DEFAULT_EXTENSIONS.image;
+function defaultExtension(format: OutputFormat, mediaType?: string): string {
+  if (!mediaType) return DEFAULT_EXTENSIONS[format];
+
+  const extension = MEDIA_EXTENSIONS[mediaType.toLowerCase().split(";", 1)[0]!];
+  return extension ?? DEFAULT_EXTENSIONS[format];
 }
+
+const MEDIA_EXTENSIONS: Record<string, string> = {
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "video/quicktime": ".mov",
+  "video/ogg": ".ogv",
+  "image/avif": ".avif",
+  "image/bmp": ".bmp",
+  "image/gif": ".gif",
+  "image/heic": ".heic",
+  "image/jpg": ".jpg",
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/svg+xml": ".svg",
+  "image/tiff": ".tiff",
+  "image/webp": ".webp",
+};
 
 function filenameStem(outputId?: string): string {
   return sanitizeFilenameStem(outputId) ?? randomBytes(4).toString("hex");
@@ -88,6 +81,7 @@ function sanitizeFilenameStem(outputId?: string): string | undefined {
 }
 
 function isDirectory(p: string): boolean {
+  if (p.endsWith("/") || p.endsWith("\\")) return true;
   try {
     return statSync(p).isDirectory();
   } catch {
@@ -98,9 +92,22 @@ function isDirectory(p: string): boolean {
 export async function writeOutput(
   opts: WriteOutputOptions
 ): Promise<string | null> {
-  const { data, format, outputId, suffix, quiet, display } = opts;
+  const {
+    data,
+    format,
+    outputId,
+    suffix,
+    extension,
+    mediaType,
+    forceFile,
+    quiet,
+    display,
+  } = opts;
   const effectiveOutput = opts.outputPath ?? process.env.AI_CLI_OUTPUT_DIR;
-  const buf = typeof data === "string" ? Buffer.from(data, "utf-8") : data;
+  const buf =
+    typeof data === "string"
+      ? new TextEncoder().encode(data)
+      : new Uint8Array(data);
   const shouldDisplay =
     display !== false &&
     (format === "image" || format === "video") &&
@@ -112,7 +119,10 @@ export async function writeOutput(
     if (isDirectory(effectiveOutput)) {
       filePath = join(
         effectiveOutput,
-        addSuffix(defaultFilename(format, outputId, buf), suffix)
+        addSuffix(
+          defaultFilename(format, outputId, extension, mediaType),
+          suffix
+        )
       );
     } else {
       filePath = addSuffix(effectiveOutput, suffix);
@@ -125,12 +135,15 @@ export async function writeOutput(
     return filePath;
   }
 
-  if (!process.stdout.isTTY) {
+  if (!process.stdout.isTTY && !forceFile) {
     process.stdout.write(buf);
     return null;
   }
 
-  const filename = addSuffix(defaultFilename(format, outputId, buf), suffix);
+  const filename = addSuffix(
+    defaultFilename(format, outputId, extension, mediaType),
+    suffix
+  );
   const path = resolve(filename);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, buf);
@@ -139,11 +152,15 @@ export async function writeOutput(
   return path;
 }
 
-async function showPreview(format: OutputFormat, buf: Buffer): Promise<void> {
+async function showPreview(
+  format: OutputFormat,
+  buf: Uint8Array
+): Promise<void> {
+  const preview = Buffer.from(buf);
   if (format === "video") {
-    await displayVideoFrame(buf);
+    await displayVideoFrame(preview);
   } else {
-    displayImage(buf);
+    await displayImage(preview);
   }
 }
 

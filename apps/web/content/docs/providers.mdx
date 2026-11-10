@@ -1,0 +1,96 @@
+---
+title: Providers
+description: Use OpenRouter, a Codex login, or a Grok subscription instead of AI Gateway.
+---
+
+`text`, `image`, `video`, and `models` can use a provider other than AI Gateway.
+Select one per command with `--provider <name>`, or set a default with
+`AI_CLI_PROVIDER`.
+
+| Provider | Credentials | Text | Image | Video |
+| --- | --- | --- | --- | --- |
+| `gateway` (default) | `ai login` or `AI_GATEWAY_API_KEY` | yes | yes | yes |
+| `openrouter` | `OPENROUTER_API_KEY` | yes | yes | blocking `ai video` only |
+| `codex` | Your local `codex login` (ChatGPT) | no | yes | no |
+| `grok` | Your local `grok login` (grok.com subscription), else `XAI_API_KEY` | yes | yes | yes |
+
+```bash
+ai image "a red fox in snow" --provider codex
+ai image "a red fox in snow" --provider grok
+ai video "a fox walking through snow" --provider grok --duration 5
+AI_CLI_PROVIDER=openrouter ai text "explain quantum computing"
+```
+
+Without `--provider` or `AI_CLI_PROVIDER`, ai-cli uses OpenRouter when
+`OPENROUTER_API_KEY` is the only configured key, and AI Gateway otherwise.
+`decide` and `audio` always use AI Gateway.
+
+## Default models
+
+| Provider | Text | Image | Video |
+| --- | --- | --- | --- |
+| `gateway` | `openai/gpt-5.5` | `openai/gpt-image-2` | `bytedance/seedance-2.0` |
+| `openrouter` | `openai/gpt-5-mini` | `openai/gpt-5-image-mini` | `bytedance/seedance-2.0` |
+| `codex` | — | `gpt-image-2` | — |
+| `grok` | `grok-4.7` | `grok-imagine-image` | `grok-imagine-video` |
+
+`AI_CLI_*_MODEL` variables set defaults for the default provider. When
+`--provider` selects a different one, that provider's defaults apply, so
+`AI_CLI_PROVIDER=openrouter` with an OpenRouter `AI_CLI_IMAGE_MODEL` does not
+leak into `--provider codex`. `codex` and `grok` also accept Gateway-style IDs
+such as `openai/gpt-image-2` and `xai/grok-imagine-image`.
+
+## Codex
+
+The `codex` provider generates images with the ChatGPT login saved by the
+[Codex CLI](https://github.com/openai/codex) in `$CODEX_HOME/auth.json`
+(default `~/.codex`). It needs no API key: run `codex login` once and sign in
+with ChatGPT.
+
+```bash
+ai image "a wide landscape of a lighthouse at dusk" --provider codex
+ai image "give the fox a small blue hat" --provider codex -i fox.png
+```
+
+- It calls the same image endpoint as Codex's built-in image tool, with `gpt-image-2`.
+- Reference images (`-i`, up to five) select an edit.
+- Codex chooses image dimensions from the prompt, so describe the shape there ("a wide landscape", "a tall poster"). `--size` and `--aspect-ratio` produce an unsupported-setting warning.
+- `--mask` is not supported. Pass `quality` or `background` in `--provider-options` under the `codex` key.
+- When the access token is about to expire, ai-cli refreshes it the way Codex does and writes the new tokens back to `auth.json`, so running Codex sessions keep working. If the refresh fails, run `codex login`.
+
+## Grok
+
+The `grok` provider uses the session saved by the Grok CLI (`grok login`) in
+`$GROK_HOME/auth.json` (default `~/.grok`). Requests go to the grok.com
+subscription proxy that Grok's own `/imagine` and `/imagine-video` commands use.
+
+```bash
+ai text "summarize this" --provider grok < notes.md
+ai image "a red fox in snow" --provider grok -m grok-imagine-image-pro
+ai video "the fox turns its head as snow falls" --provider grok -i fox.jpg --resolution 1280x720
+ai video start "a paper boat on a pond" --provider grok -o boat.json
+ai video status boat.json --download
+```
+
+- Image models are `grok-imagine-image` and `grok-imagine-image-pro`. The video model is `grok-imagine-video`.
+- Video accepts `--duration`, `--aspect-ratio`, and `--resolution` (`854x480` or `1280x720`). `-i` animates an image; the video then keeps the image's aspect ratio, and `--aspect-ratio` applies to text-only prompts.
+- `ai video start` records the provider in the operation file, so `ai video status` checks the same backend without `--provider`.
+- When the session is close to expiry, ai-cli runs `grok models` so the Grok CLI renews its own login, then reads the new token. If the session is still expired, run `grok login`.
+- Without a Grok login, the provider uses `XAI_API_KEY` against the xAI API, which bills your xAI API account instead of the subscription.
+
+## OpenRouter
+
+The `openrouter` provider uses the
+[OpenRouter AI SDK provider](https://github.com/OpenRouterTeam/ai-sdk-provider)
+with `OPENROUTER_API_KEY`. `ai models --provider openrouter` lists models from
+OpenRouter's `/models`, `/images/models`, and `/videos/models` catalogs.
+OpenRouter video models support blocking `ai video`, but not `ai video start`.
+
+## Connection flags
+
+`--base-url`, `--scope`, `--team-id-or-slug`, and `AI_GATEWAY_*` variables
+apply to AI Gateway only. The CLI rejects those flags for other providers. In
+`ai mcp`, the provider comes from the server environment. Tools reject
+`--provider`, so an agent cannot switch to your Codex or Grok login. For the
+same reason, `video_status` under `ai mcp` uses the server's provider and
+rejects an operation file that names a different one.

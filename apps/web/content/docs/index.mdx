@@ -1,0 +1,65 @@
+---
+title: Introduction
+description: Generate media and text, and make typed judgments from the terminal.
+---
+
+Generate anything from your terminal. Create text, images, video, and audio, and make typed decisions with composable commands. ai-cli uses the [Vercel AI SDK](https://sdk.vercel.ai) and [AI Gateway](https://vercel.com/docs/ai-gateway) to connect to hundreds of models.
+
+## What it does
+
+<Cards>
+  <Card title="Image generation" description="Create images from text or existing images." />
+  <Card title="Video generation" description="Generate video from text or images." />
+  <Card title="Text generation" description="Generate text from prompts with any language model." />
+  <Card title="Audio generation" description="Generate speech or transcribe audio files and streams." />
+  <Card title="Multi-model comparison" description="Run the same prompt across multiple models in parallel." />
+  <Card title="Decisions" description="Use AI SDK evaluation models with typed questions and JSON results." href="/docs/decide" />
+  <Card title="Stdin piping" description="Pipe any content in and out for composable workflows." />
+  <Card title="Inline preview" description="See generated images, video frames, and speech playback directly in your terminal." />
+</Cards>
+
+## Quick start
+
+<Steps>
+  <Step>
+    ### Install globally
+
+    ```bash
+    npm install -g ai-cli
+    ```
+  </Step>
+  <Step>
+    ### Add your API key
+
+    ```bash
+    ai login
+    ```
+  </Step>
+  <Step>
+    ### Generate something
+
+    ```bash
+    ai image "a cute dog"
+    ai video "a spinning triangle"
+    ai text "explain quantum computing"
+    ai audio speak "Thanks for trying ai-cli"
+    ai audio transcribe recording.mp3
+    ```
+  </Step>
+</Steps>
+
+## Commands
+
+<Cards>
+  <Card title="image" description="Generate images from a prompt." href="/docs/commands#image" />
+  <Card title="video" description="Generate video from text or start/end frames." href="/docs/commands#video" />
+  <Card title="text" description="Generate text from a prompt." href="/docs/commands#text" />
+  <Card title="audio" description="Generate speech or transcribe audio." href="/docs/commands#audio" />
+  <Card title="decide" description="Make decisions with named typed questions against shared stdin." href="/docs/decide" />
+  <Card title="models" description="List available models from the gateway." href="/docs/commands#models" />
+  <Card title="mcp" description="Run every command as a typed tool over a stdio MCP server." href="/docs/mcp" />
+</Cards>
+
+<Callout type="info">
+  ai-cli works the same for people and agents. Progress goes to stderr, results go to files or stdout, and `--json` returns metadata that scripts can parse.
+</Callout>

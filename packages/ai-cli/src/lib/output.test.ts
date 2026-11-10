@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
+
+import { describe, expect, test } from "vitest";
 
 import { writeOutput } from "./output.js";
 
@@ -78,47 +79,72 @@ describe("writeOutput", () => {
     });
   });
 
-  test("uses .svg extension for SVG image payloads", async () => {
+  test("supports custom audio extensions when writing to a directory", async () => {
     await withTempDir(async (dir) => {
-      const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>');
       const path = await writeOutput({
-        data: svg,
+        data: Buffer.from([1, 2, 3]),
+        format: "audio",
+        extension: ".wav",
+        outputPath: dir,
+        outputId: "speech_123",
+        quiet: true,
+      });
+
+      expect(path).not.toBeNull();
+      expect(basename(path!)).toBe("speech_123.wav");
+      expect(readFileSync(path!)).toEqual(Buffer.from([1, 2, 3]));
+    });
+  });
+
+  test("uses the generated image media type for directory filenames", async () => {
+    await withTempDir(async (dir) => {
+      const path = await writeOutput({
+        data: Buffer.from([1, 2, 3]),
         format: "image",
         outputPath: dir,
-        outputId: "vector_1",
+        outputId: "resp_123",
+        mediaType: "image/jpeg",
         quiet: true,
         display: false,
       });
 
       expect(path).not.toBeNull();
-      expect(basename(path!)).toBe("vector_1.svg");
-      expect(readFileSync(path!)).toEqual(svg);
+      expect(basename(path!)).toBe("resp_123.jpg");
     });
   });
 
-  test("sniffs jpeg and webp extensions from magic bytes", async () => {
+  test("uses an svg extension for generated SVG images", async () => {
     await withTempDir(async (dir) => {
-      const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46]);
-      const jpegPath = await writeOutput({
-        data: jpeg,
+      const path = await writeOutput({
+        data: '<svg xmlns="http://www.w3.org/2000/svg" />',
         format: "image",
         outputPath: dir,
-        outputId: "photo",
+        outputId: "resp_123",
+        mediaType: "image/svg+xml",
         quiet: true,
         display: false,
       });
-      expect(basename(jpegPath!)).toBe("photo.jpg");
 
-      const webp = Buffer.from("RIFF\x00\x00\x00\x00WEBP", "binary");
-      const webpPath = await writeOutput({
-        data: webp,
+      expect(path).not.toBeNull();
+      expect(basename(path!)).toBe("resp_123.svg");
+    });
+  });
+
+  test("prefers an explicit image extension over the media type", async () => {
+    await withTempDir(async (dir) => {
+      const path = await writeOutput({
+        data: Buffer.from([1, 2, 3]),
         format: "image",
+        extension: ".png",
         outputPath: dir,
-        outputId: "anim",
+        outputId: "resp_123",
+        mediaType: "image/jpeg",
         quiet: true,
         display: false,
       });
-      expect(basename(webpPath!)).toBe("anim.webp");
+
+      expect(path).not.toBeNull();
+      expect(basename(path!)).toBe("resp_123.png");
     });
   });
 });

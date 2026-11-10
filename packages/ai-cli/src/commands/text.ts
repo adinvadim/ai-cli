@@ -4,8 +4,8 @@ import {
   type ModelMessage,
   type TextPart,
 } from "ai";
-import type { Command } from "commander";
 
+import type { Command } from "../lib/command.js";
 import {
   collectImageReference,
   isLikelyImage,
@@ -13,11 +13,12 @@ import {
   type ImageReference,
 } from "../lib/image-references.js";
 import { buildJobs, runJobs } from "../lib/jobs.js";
-import { fetchModels, resolveModels } from "../lib/models.js";
+import { addProviderOption, mediaSettings } from "../lib/media-options.js";
+import { resolveModels } from "../lib/models.js";
 import type { OutputFormat } from "../lib/output.js";
 import { parsePositiveInt, parseTemperature } from "../lib/parse.js";
-import { resolveProvider, textModel } from "../lib/providers.js";
 import { readStdin, stdinAsText } from "../lib/stdin.js";
+import { addTimeoutOption, timeoutMs } from "../lib/timeout.js";
 
 const DEFAULT_CONCURRENCY = 4;
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -35,6 +36,7 @@ interface TextOptions {
   quiet?: boolean;
   json?: boolean;
   provider?: string;
+  timeout: number;
 }
 
 type TextPrompt = string | ModelMessage[];
@@ -46,7 +48,7 @@ function resolveFormat(fmt?: string): OutputFormat {
 }
 
 export function registerTextCommand(program: Command) {
-  program
+  const command = program
     .command("text")
     .description("Generate text from a prompt")
     .argument("[prompt]", "The prompt to generate text from")
@@ -71,9 +73,9 @@ export function registerTextCommand(program: Command) {
     .option("--max-tokens <n>", "Maximum tokens to generate")
     .option("-t, --temperature <n>", "Temperature (0-2)")
     .option("-q, --quiet", "Suppress progress output")
-    .option("--json", "Output metadata as JSON")
-    .option("--provider <provider>", "Provider: gateway, openrouter")
-    .action(async (rawPrompt: string | undefined, opts: TextOptions) => {
+    .option("--json", "Output metadata as JSON");
+  addTimeoutOption(addProviderOption(command), DEFAULT_TIMEOUT_MS).action(
+    async (rawPrompt: string | undefined, opts: TextOptions) => {
       const prompt = rawPrompt?.trim() || undefined;
       const stdin = await readStdin();
       const imageReferenceInputs = opts.image ?? [];
@@ -103,13 +105,13 @@ export function registerTextCommand(program: Command) {
       const textPrompt = buildTextPrompt({ prompt, stdinText, images });
 
       const format = resolveFormat(opts.format);
-      const provider = resolveProvider(opts.provider);
-      const providerModels = await fetchModels(provider);
+      const { provider } = await mediaSettings({ provider: opts.provider });
+      const catalog = await provider.catalog();
       const models = resolveModels(
         "text",
         opts.model,
-        providerModels.text,
-        provider
+        catalog.text,
+        provider.defaults
       );
       const countPerModel = opts.count
         ? parsePositiveInt(opts.count, "count")
@@ -126,13 +128,13 @@ export function registerTextCommand(program: Command) {
       const { total, failed } = await runJobs(
         jobs,
         async (modelId) => {
-          const abort = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
+          const abort = AbortSignal.timeout(timeoutMs(opts.timeout));
           const result = await generateText({
             headers: {
               "http-referer": "https://github.com/vercel-labs/ai-cli",
               "x-title": "ai-cli",
             },
-            model: textModel(provider, modelId),
+            model: provider.languageModel(modelId),
             prompt: textPrompt,
             system: opts.system,
             maxOutputTokens: maxTokens,
@@ -154,7 +156,8 @@ export function registerTextCommand(program: Command) {
       );
       if (failed === total) process.exit(1);
       if (failed > 0) process.exit(2);
-    });
+    }
+  );
 }
 
 function buildTextPrompt({

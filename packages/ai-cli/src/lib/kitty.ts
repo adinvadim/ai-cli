@@ -28,6 +28,9 @@ import { extractKeyframe } from "./mp4.js";
 import { encodePNG } from "./png.js";
 
 const CHUNK_SIZE = 4096;
+const SVG_PREVIEW_SIZE = 512;
+const SVG_BASE_DENSITY = 72;
+const SVG_FALLBACK_DENSITY = 300;
 
 export async function displayVideoFrame(buf: Buffer): Promise<void> {
   try {
@@ -36,14 +39,48 @@ export async function displayVideoFrame(buf: Buffer): Promise<void> {
     const frame = await decodeIDR(kf.sps, kf.pps, kf.sliceData);
     if (!frame) return;
     const png = encodePNG(frame.yuv, frame.width, frame.height);
-    displayImage(png);
+    await displayImage(png);
   } catch {
     // Preview is best-effort; skip silently on any failure
   }
 }
 
-export function displayImage(buf: Buffer): void {
-  const encoded = buf.toString("base64");
+export async function displayImage(buf: Buffer): Promise<void> {
+  let preview = buf;
+  const isPng = hasPngSignature(buf);
+  if (!isPng) {
+    try {
+      const { default: sharp } = await import("sharp");
+      const image = sharp(buf);
+      const metadata = await image.metadata();
+      if (metadata.format === "svg") {
+        const longestSide = Math.max(metadata.width ?? 0, metadata.height ?? 0);
+        const density =
+          longestSide > 0
+            ? Math.max(
+                SVG_BASE_DENSITY,
+                Math.ceil((SVG_BASE_DENSITY * SVG_PREVIEW_SIZE) / longestSide)
+              )
+            : SVG_FALLBACK_DENSITY;
+        preview = await sharp(buf, { density })
+          .resize({
+            width: SVG_PREVIEW_SIZE,
+            height: SVG_PREVIEW_SIZE,
+            fit: "inside",
+          })
+          .flatten({ background: "#ffffff" })
+          .png()
+          .toBuffer();
+      } else {
+        preview = await image.png().toBuffer();
+      }
+    } catch {
+      // Preview is best-effort; skip unsupported or invalid image formats.
+      return;
+    }
+  }
+
+  const encoded = preview.toString("base64");
   for (let i = 0; i < encoded.length; i += CHUNK_SIZE) {
     const chunk = encoded.slice(i, i + CHUNK_SIZE);
     const isLast = i + CHUNK_SIZE >= encoded.length;
@@ -52,4 +89,18 @@ export function displayImage(buf: Buffer): void {
     process.stderr.write(`\x1b_G${control};${chunk}\x1b\\`);
   }
   process.stderr.write("\n");
+}
+
+function hasPngSignature(buf: Buffer): boolean {
+  return (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47 &&
+    buf[4] === 0x0d &&
+    buf[5] === 0x0a &&
+    buf[6] === 0x1a &&
+    buf[7] === 0x0a
+  );
 }

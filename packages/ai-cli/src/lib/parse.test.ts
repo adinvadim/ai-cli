@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 
 import {
   parsePositiveInt,
@@ -77,6 +77,10 @@ describe("parseSize", () => {
     expect(() => parseSize("1024")).toThrow("WxH format");
     expect(() => parseSize("1024x")).toThrow("WxH format");
     expect(() => parseSize("16:9")).toThrow("WxH format");
+  });
+
+  test("uses the provided flag name in errors", () => {
+    expect(() => parseSize("1080p", "resolution")).toThrow("--resolution");
   });
 });
 

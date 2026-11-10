@@ -1,0 +1,39 @@
+---
+title: Installation
+description: Install ai-cli and configure API access.
+---
+
+## Install
+
+```bash
+npm install -g ai-cli
+```
+
+Or with other package managers:
+
+```bash
+pnpm add -g ai-cli
+yarn global add ai-cli
+```
+
+## API key
+
+ai-cli uses a [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) API key. Save one with:
+
+```bash
+ai login
+```
+
+`ai login` opens the [API keys page](https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai%2Fapi-keys), checks the key you paste, and saves it to `~/.config/ai-cli/auth.json`. You can also pipe the key in, which suits scripts:
+
+```bash
+echo "$AI_GATEWAY_API_KEY" | ai login
+```
+
+Or set the environment variable, which takes priority over the saved key:
+
+```bash
+export AI_GATEWAY_API_KEY="your-key"
+```
+
+`ai logout` deletes the saved key.

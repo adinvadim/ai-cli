@@ -1,233 +1,481 @@
-import { generateImage, generateText } from "ai";
-import type { Command } from "commander";
+import { generateImage, generateText, type JSONValue } from "ai";
 
+import type { Command } from "../lib/command.js";
 import {
   collectImageReference,
   loadImageReferences,
   type ImageReference,
 } from "../lib/image-references.js";
-import { buildJobs, runJobs } from "../lib/jobs.js";
-import { fetchModels, resolveModels } from "../lib/models.js";
+import { readGenerateTextOptions, toolImages } from "../lib/language-images.js";
+import { artifact, runMediaBatches, runMediaJobs } from "../lib/media-jobs.js";
+import {
+  addMediaOptions,
+  mediaSettings,
+  mergeOptions,
+  type MediaOptions,
+} from "../lib/media-options.js";
+import { resolveModels } from "../lib/models.js";
 import { parsePositiveInt, parseSize, parseAspectRatio } from "../lib/parse.js";
-import { imageModel, resolveProvider, textModel } from "../lib/providers.js";
 import { responseIdFromHeaders } from "../lib/response-id.js";
 import { readStdin } from "../lib/stdin.js";
+import { addTimeoutOption, timeoutMs } from "../lib/timeout.js";
 
 const DEFAULT_CONCURRENCY = 4;
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
+const SVG_IMAGE_MODEL_IDS = new Set([
+  "quiverai/arrow-1.1",
+  "quiverai/arrow-2",
+  "quiverai/arrow-2-telos",
+]);
+const SVG_LANGUAGE_IMAGE_MODEL_IDS = new Set([
+  "quiverai/arrow-2",
+  "quiverai/arrow-2-telos",
+]);
 
-interface ImageOptions {
-  model?: string;
-  output?: string;
-  image?: string[];
-  count?: string;
+interface ImageOptions extends MediaOptions {
+  images?: string[];
+  mask?: string;
   size?: string;
   aspectRatio?: string;
-  quality?: string;
-  style?: string;
-  quiet?: boolean;
-  json?: boolean;
-  concurrency?: string;
-  preview?: boolean;
-  provider?: string;
+  maxImagesPerCall?: string;
+  api?: string;
+  generateTextOptions?: string;
 }
 
 export function registerImageCommand(program: Command) {
-  program
-    .command("image")
-    .description("Generate an image from a prompt")
-    .argument("[prompt]", "The prompt to generate an image from")
+  const command = addMediaOptions(
+    program
+      .command("image")
+      .description(
+        "Generate or edit images using AI SDK generateImage or generateText"
+      )
+      .argument("[prompt]", "Image prompt"),
+    DEFAULT_CONCURRENCY
+  )
     .option(
-      "-m, --model <model>",
-      "Model ID (creator/model-name), comma-separated for multi-model"
-    )
-    .option("-o, --output <path>", "Output file path or directory")
-    .option(
-      "-i, --image <path-or-url>",
-      "Reference image path or URL (repeatable)",
+      "-i, --images <path-or-url>",
+      "SDK prompt.images reference (repeatable)",
       collectImageReference,
       []
     )
-    .option("-n, --count <n>", "Number of images per model (default: 1)")
-    .option("--size <WxH>", "Image size (e.g. 1024x1024)")
-    .option("--aspect-ratio <W:H>", "Aspect ratio (e.g. 16:9)")
-    .option("--quality <level>", "Quality (standard, hd)")
-    .option("--style <style>", "Style (e.g. vivid, natural)")
-    .option("-q, --quiet", "Suppress progress output")
-    .option("--json", "Output metadata as JSON")
     .option(
-      "--no-preview",
-      "Disable inline image preview in supported terminals"
+      "--mask <path-or-url>",
+      "SDK prompt.mask for editing reference images"
+    )
+    .option("--size <WxH>", "SDK image size, e.g. 1024x1024")
+    .option("--aspect-ratio <W:H>", "SDK aspectRatio, e.g. 16:9")
+    .option("--max-images-per-call <n>", "SDK maxImagesPerCall batching limit")
+    .option(
+      "--api <api>",
+      "generateImage or generateText (default: model catalog)"
     )
     .option(
-      "-p, --concurrency <n>",
-      `Max parallel generations (default: ${DEFAULT_CONCURRENCY})`
-    )
-    .option("--provider <provider>", "Provider: gateway, openrouter")
-    .action(async (rawPrompt: string | undefined, opts: ImageOptions) => {
+      "--generate-text-options <path>",
+      "JSON generateText settings and provider tools; selects generateText"
+    );
+  addTimeoutOption(command, DEFAULT_TIMEOUT_MS).action(
+    async (rawPrompt: string | undefined, opts: ImageOptions) => {
+      const settings = await mediaSettings(opts, DEFAULT_CONCURRENCY);
+      const size = opts.size === undefined ? undefined : parseSize(opts.size);
+      const aspectRatio =
+        opts.aspectRatio === undefined
+          ? undefined
+          : parseAspectRatio(opts.aspectRatio);
+      const maxImagesPerCall =
+        opts.maxImagesPerCall === undefined
+          ? undefined
+          : parsePositiveInt(opts.maxImagesPerCall, "max-images-per-call");
+      if (
+        opts.api !== undefined &&
+        !["generateImage", "generateText"].includes(opts.api)
+      )
+        throw new Error("--api must be generateImage or generateText");
+      if (opts.generateTextOptions && opts.api === "generateImage")
+        throw new Error("--generate-text-options requires --api generateText");
+      const textOptions = opts.generateTextOptions
+        ? await readGenerateTextOptions(opts.generateTextOptions)
+        : {};
       const prompt = rawPrompt?.trim() || undefined;
       const stdin = await readStdin();
-      const imageReferenceInputs = opts.image ?? [];
-      if (!prompt && !stdin && imageReferenceInputs.length === 0) {
-        process.stderr.write(
-          "Error: prompt or reference image is required (provide a prompt, --image, or pipe an image via stdin)\n"
-        );
-        process.exit(1);
-      }
-
-      let referenceImages: ImageReference[] = [];
-      try {
-        referenceImages = await loadImageReferences(imageReferenceInputs);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`Error: ${message}\n`);
-        process.exit(1);
-      }
-
       const images: ImageReference[] = [
         ...(stdin ? [new Uint8Array(stdin)] : []),
-        ...referenceImages,
+        ...(await loadImageReferences(opts.images ?? [], "images")),
       ];
-
-      let imagePrompt: string | { images: ImageReference[]; text?: string };
-      if (images.length > 0) {
-        imagePrompt = prompt ? { images, text: prompt } : { images };
-      } else {
-        imagePrompt = prompt!;
-      }
-
-      const provider = resolveProvider(opts.provider);
-      const providerModels = await fetchModels(provider);
+      const mask =
+        opts.mask === undefined
+          ? undefined
+          : (await loadImageReferences([opts.mask], "mask"))[0];
+      if (mask !== undefined && images.length === 0)
+        throw new Error("--mask requires --images or piped image input");
+      if (!prompt && images.length === 0)
+        throw new Error(
+          "prompt or reference image is required (use --images or pipe an image via stdin)"
+        );
+      const imagePrompt =
+        images.length > 0 ? { images, text: prompt, mask } : prompt!;
+      const { provider } = settings;
+      const catalog = await provider.catalog();
+      const explicitApi =
+        opts.api ?? (opts.generateTextOptions ? "generateText" : undefined);
+      // Providers without generateText image models skip catalog routing.
+      const imageApiOnly = provider.imageApiOnly === true;
+      const languageIds = new Set(
+        imageApiOnly
+          ? []
+          : [...catalog.languageImageModelIds, ...SVG_LANGUAGE_IMAGE_MODEL_IDS]
+      );
       const models = resolveModels(
         "image",
         opts.model,
-        providerModels.image,
-        provider
+        explicitApi === "generateText"
+          ? catalog.text
+          : explicitApi === "generateImage"
+            ? catalog.image
+            : [
+                ...catalog.image,
+                ...[...SVG_LANGUAGE_IMAGE_MODEL_IDS].map((id) => ({ id })),
+              ],
+        provider.defaults
       );
-      const countPerModel = opts.count
-        ? parsePositiveInt(opts.count, "count")
-        : 1;
-      const size = opts.size ? parseSize(opts.size) : undefined;
-      const aspectRatio = opts.aspectRatio
-        ? parseAspectRatio(opts.aspectRatio)
-        : undefined;
-      const provOpts = buildProviderOptions(opts, provider);
-
-      if (
-        (opts.quality || opts.style) &&
-        models.every((m) => !m.startsWith("openai/"))
-      ) {
-        process.stderr.write(
-          "Warning: --quality and --style only apply to OpenAI models\n"
+      if (!explicitApi && !imageApiOnly && !catalog.available)
+        throw new Error(
+          "Cannot determine the image API because model discovery failed. Retry or select --api generateImage / --api generateText explicitly."
         );
+      const missingModel =
+        !explicitApi && !imageApiOnly
+          ? models.find(
+              (model) =>
+                !languageIds.has(model) &&
+                !catalog.image.some((entry) => entry.id === model)
+            )
+          : undefined;
+      if (missingModel)
+        throw new Error(
+          `Cannot determine the image API for ${missingModel} because it is missing from the ${provider.label} image catalog. Select --api generateImage or --api generateText explicitly.`
+        );
+      const usesText = (model: string) =>
+        explicitApi === "generateText" ||
+        (!explicitApi && languageIds.has(model));
+      if (models.some(usesText)) {
+        if (size || mask || maxImagesPerCall !== undefined)
+          throw new Error(
+            "generateText does not support --size, --mask or --max-images-per-call; use --provider-options for model-specific image settings"
+          );
+        if (
+          aspectRatio &&
+          models.some(
+            (model) => usesText(model) && !model.startsWith("google/")
+          )
+        )
+          throw new Error(
+            "--aspect-ratio on generateText is supported for Google imageConfig only; use --provider-options for this model"
+          );
       }
-
-      const jobs = buildJobs(models, countPerModel);
-
-      const { total, failed } = await runJobs(
-        jobs,
+      await runMediaJobs(
+        models,
         async (modelId) => {
-          const abort = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
-
-          if (providerModels.languageImageModelIds.has(modelId)) {
-            const messageContent: Array<
-              | { type: "text"; text: string }
-              | { type: "image"; image: ImageReference }
-            > = [];
-            if (typeof imagePrompt === "string") {
-              messageContent.push({ type: "text", text: imagePrompt });
-            } else {
-              for (const img of imagePrompt.images) {
-                messageContent.push({ type: "image", image: img });
-              }
-              if (imagePrompt.text) {
-                messageContent.push({
-                  type: "text",
-                  text: imagePrompt.text,
-                });
-              } else {
-                messageContent.push({
-                  type: "text",
-                  text: "Generate an image",
-                });
-              }
-            }
-            const creator = providerModels.all.find(
-              (m) => m.id === modelId
-            )?.creator;
-            const result = await generateText({
-              headers: {
-                "http-referer": "https://github.com/vercel-labs/ai-cli",
-                "x-title": "ai-cli",
-              },
-              model: textModel(provider, modelId),
-              messages: [{ role: "user", content: messageContent }],
-              abortSignal: abort,
-              providerOptions:
-                creator === "google"
-                  ? { google: { responseModalities: ["IMAGE", "TEXT"] } }
-                  : undefined,
-            });
-            const imageFile = result.files?.find((f) =>
-              f.mediaType.startsWith("image/")
-            );
-            if (!imageFile) {
-              throw new Error(
-                `Model ${modelId} did not return an image in the response`
+          // Build request options per call so every image gets the full
+          // --timeout. A signal created once per model would start counting
+          // while calls wait behind --concurrency, aborting queued calls early.
+          const request = () => ({
+            headers: settings.headers,
+            seed: settings.seed,
+            maxRetries: settings.maxRetries,
+            abortSignal: AbortSignal.timeout(timeoutMs(opts.timeout)),
+          });
+          if (usesText(modelId)) {
+            const generateOnce = async () => {
+              const result = await generateText({
+                ...textOptions,
+                ...request(),
+                model: provider.languageModel(modelId),
+                messages: [
+                  {
+                    role: "user",
+                    content: [
+                      ...images.map((image) => ({
+                        type: "image" as const,
+                        image,
+                      })),
+                      { type: "text", text: prompt ?? "Generate an image" },
+                    ],
+                  },
+                ],
+                providerOptions: mergeOptions(
+                  languageImageProviderOptions(
+                    modelId.split("/")[0],
+                    aspectRatio
+                  ) ?? {},
+                  settings.providerOptions
+                ) as typeof settings.providerOptions,
+              });
+              const artifacts = result.files
+                .filter((file) => file.mediaType.startsWith("image/"))
+                .map((file) => artifact(file, result.response.id));
+              artifacts.push(
+                ...toolImages(
+                  result.toolResults,
+                  textOptions.tools,
+                  result.response.id
+                )
               );
-            }
+              if (artifacts.length === 0 && SVG_IMAGE_MODEL_IDS.has(modelId)) {
+                const svg = extractSvgImage(result.text);
+                if (svg)
+                  artifacts.push({
+                    data: svg,
+                    mediaType: "image/svg+xml",
+                    id: result.response.id,
+                  });
+              }
+              const {
+                messages: _messages,
+                body: _body,
+                ...response
+              } = result.response;
+              return {
+                artifacts,
+                text: result.text,
+                usage: result.usage,
+                totalUsage: result.totalUsage,
+                warnings: result.warnings,
+                providerMetadata: result.providerMetadata,
+                response,
+                finishReason: result.finishReason,
+                // Tool image bytes live in artifacts, not in the diagnostic manifest.
+                toolResults: result.toolResults.map((item) => ({
+                  ...item,
+                  output:
+                    textOptions.tools?.[item.toolName]?.id ===
+                      "openai.image_generation" &&
+                    typeof item.output === "object" &&
+                    item.output !== null &&
+                    "result" in item.output
+                      ? { ...item.output, result: "[saved as image]" }
+                      : item.output,
+                })),
+              };
+            };
+            if (settings.n === 1) return generateOnce();
+            const batches = await runMediaBatches(
+              settings.n,
+              1,
+              async () => {
+                const result = await generateOnce();
+                if (!result.artifacts.length)
+                  throw new Error(`Model ${modelId} did not return any images`);
+                return result;
+              },
+              settings.concurrency
+            );
+            const calls = batches.flatMap(({ result }) => {
+              if (!result) return [];
+              const { artifacts, ...call } = result;
+              return [{ images: artifacts, ...call }];
+            });
             return {
-              data: Buffer.from(imageFile.uint8Array),
-              id: result.response.id,
+              artifacts: calls.flatMap((call) => call.images),
+              text: calls
+                .map((call) => call.text)
+                .filter(Boolean)
+                .join("\n"),
+              usage: {
+                inputTokens: sumImageUsage(
+                  calls.map((call) => call.usage.inputTokens)
+                ),
+                outputTokens: sumImageUsage(
+                  calls.map((call) => call.usage.outputTokens)
+                ),
+                totalTokens: sumImageUsage(
+                  calls.map((call) => call.usage.totalTokens)
+                ),
+              },
+              warnings: calls.flatMap((call) => call.warnings ?? []),
+              calls,
+              failures: batchFailures(batches),
             };
           }
-
-          const result = await generateImage({
-            headers: {
-              "http-referer": "https://github.com/vercel-labs/ai-cli",
-              "x-title": "ai-cli",
-            },
-            model: imageModel(provider, modelId),
-            prompt: imagePrompt,
-            abortSignal: abort,
-            n: 1,
-            size,
-            aspectRatio,
-            providerOptions:
-              Object.keys(provOpts).length > 0 ? provOpts : undefined,
-          });
+          const imageModel = provider.imageModel(modelId);
+          const batches = await runMediaBatches(
+            settings.n,
+            // Without --max-images-per-call, respect the model's own limit.
+            maxImagesPerCall ??
+              (typeof imageModel === "object" &&
+              typeof imageModel.maxImagesPerCall === "number"
+                ? imageModel.maxImagesPerCall
+                : undefined),
+            (count) =>
+              generateImage({
+                ...request(),
+                model: imageModel,
+                prompt: imagePrompt,
+                n: count,
+                maxImagesPerCall: count,
+                size,
+                aspectRatio,
+                providerOptions: settings.providerOptions,
+              })
+          );
+          const completed = batches.flatMap((batch) =>
+            batch.result ? [{ ...batch, result: batch.result }] : []
+          );
+          const calls = completed.flatMap(({ result }) =>
+            result.calls.map((call) => ({
+              images: call.images.map((file) => ({
+                ...artifact(file, responseIdFromHeaders(call.response.headers)),
+                mediaType: generatedImageMediaType(modelId, file.mediaType),
+              })),
+              response: call.response,
+              providerMetadata: call.providerMetadata,
+              warnings: call.warnings,
+              usage: call.usage,
+            }))
+          );
           return {
-            data: Buffer.from(result.image.uint8Array),
-            id: responseIdFromHeaders(result.responses[0]?.headers),
+            artifacts: calls.flatMap((call) => call.images),
+            usage: {
+              inputTokens: sumImageUsage(
+                completed.map(({ result }) => result.usage.inputTokens)
+              ),
+              outputTokens: sumImageUsage(
+                completed.map(({ result }) => result.usage.outputTokens)
+              ),
+              totalTokens: sumImageUsage(
+                completed.map(({ result }) => result.usage.totalTokens)
+              ),
+            },
+            warnings: completed.flatMap(({ result }) => result.warnings),
+            calls,
+            batches: completed.map(({ index, requested, result }) => ({
+              index,
+              requested,
+              received: result.images.length,
+              usage: result.usage,
+              warnings: result.warnings,
+              providerMetadata: result.providerMetadata,
+              responses: result.responses,
+            })),
+            failures: batchFailures(batches),
           };
         },
         {
-          noun: "image",
+          ...opts,
+          n: settings.n,
+          concurrency: settings.concurrency,
           format: "image",
-          outputPath: opts.output,
-          quiet: opts.quiet,
-          json: opts.json,
-          display: opts.preview,
-          concurrency: opts.concurrency
-            ? parsePositiveInt(opts.concurrency, "concurrency")
-            : DEFAULT_CONCURRENCY,
         }
       );
-      if (failed === total) process.exit(1);
-      if (failed > 0) process.exit(2);
-    });
+    }
+  );
 }
 
-function buildProviderOptions(
-  opts: ImageOptions,
-  provider: ReturnType<typeof resolveProvider>
-): Record<string, Record<string, string>> {
-  if (!opts.quality && !opts.style) return {};
-  const flags: Record<string, string> = {};
-  if (opts.quality) flags.quality = opts.quality;
-  if (opts.style) flags.style = opts.style;
-  // Gateway image models read openai.*; OpenRouter imageModel merges openrouter.*.
-  return provider === "openrouter"
-    ? { openrouter: flags }
-    : { openai: flags };
+function batchFailures(
+  batches: Awaited<ReturnType<typeof runMediaBatches<unknown>>>
+) {
+  return batches.flatMap(({ index, requested, error }) =>
+    error ? [{ kind: "batch" as const, index, requested, error }] : []
+  );
+}
+
+function sumImageUsage(values: Array<number | undefined>): number | undefined {
+  const known = values.filter((value): value is number => value !== undefined);
+  return known.length
+    ? known.reduce((sum, value) => sum + value, 0)
+    : undefined;
+}
+
+export function extractSvgImage(text: string): string | undefined {
+  const svgStart = /<svg(?=[\s/>])/gi;
+  let bestMatch: string | undefined;
+  for (let match = svgStart.exec(text); match; match = svgStart.exec(text)) {
+    const svg = extractSvgImageAt(text, match.index);
+    if (!svg) continue;
+
+    if (!bestMatch || svg.length > bestMatch.length) bestMatch = svg;
+    // Nested SVG elements are already included in this candidate.
+    svgStart.lastIndex = match.index + svg.length;
+  }
+
+  return bestMatch;
+}
+
+function extractSvgImageAt(text: string, start: number): string | undefined {
+  let depth = 0;
+  let cursor = start;
+  while (cursor < text.length) {
+    const tagStart = text.indexOf("<", cursor);
+    if (tagStart === -1) return undefined;
+
+    if (text.startsWith("<!--", tagStart)) {
+      const commentEnd = text.indexOf("-->", tagStart + 4);
+      if (commentEnd === -1) return undefined;
+      cursor = commentEnd + 3;
+      continue;
+    }
+
+    if (text.startsWith("<![CDATA[", tagStart)) {
+      const cdataEnd = text.indexOf("]]>", tagStart + 9);
+      if (cdataEnd === -1) return undefined;
+      cursor = cdataEnd + 3;
+      continue;
+    }
+
+    const tagEnd = findMarkupEnd(text, tagStart + 1);
+    if (tagEnd === -1) return undefined;
+
+    const tag = text.slice(tagStart, tagEnd + 1);
+    if (/^<svg(?=[\s/>])/i.test(tag)) {
+      if (/\/\s*>$/.test(tag)) {
+        if (depth === 0) return text.slice(start, tagEnd + 1);
+      } else {
+        depth++;
+      }
+    } else if (/^<\/svg\s*>$/i.test(tag)) {
+      depth--;
+      if (depth === 0) return text.slice(start, tagEnd + 1);
+      if (depth < 0) return undefined;
+    }
+
+    cursor = tagEnd + 1;
+  }
+
+  return undefined;
+}
+
+function findMarkupEnd(text: string, start: number): number {
+  let quote: '"' | "'" | undefined;
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+    if (quote) {
+      if (char === quote) quote = undefined;
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === ">") {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+export function generatedImageMediaType(
+  modelId: string,
+  reportedMediaType: string
+): string {
+  return SVG_IMAGE_MODEL_IDS.has(modelId) ? "image/svg+xml" : reportedMediaType;
+}
+
+export function languageImageProviderOptions(
+  creator: string | undefined,
+  aspectRatio?: `${number}:${number}`
+): { google: Record<string, JSONValue> } | undefined {
+  if (creator !== "google") return undefined;
+  return {
+    google: {
+      responseModalities: ["IMAGE", "TEXT"],
+      // Gemini image models don't support `size`; aspect ratio goes through
+      // imageConfig and defaults to 1:1 when unset.
+      ...(aspectRatio ? { imageConfig: { aspectRatio } } : {}),
+    },
+  };
 }

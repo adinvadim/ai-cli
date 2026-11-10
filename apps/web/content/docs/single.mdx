@@ -1,0 +1,164 @@
+---
+title: Piping & Output
+description: Compose ai-cli with other commands using stdin and stdout.
+---
+
+## Stdin
+
+Most commands accept input via stdin. The behavior depends on the command type:
+
+### Text
+
+Stdin is read as text and combined with the prompt argument:
+
+```bash
+cat notes.txt | ai text "summarize this"
+git diff | ai text "explain these changes"
+cat src/auth.ts | ai text "review for security issues"
+```
+
+If both stdin and a prompt argument are provided, they're joined with a `---` separator:
+
+```
+<stdin content>
+
+---
+
+<prompt argument>
+```
+
+If only stdin is provided, it becomes the full prompt.
+
+### Image
+
+Stdin is read as binary image data for image-to-image generation:
+
+```bash
+cat photo.png | ai image "make it a watercolor painting"
+```
+
+### Video
+
+Stdin supplies SDK `prompt.image`. Use `--frame-images frames.json` with
+`first_frame` / `last_frame` roles to guide endpoints, including last-frame-only
+requests. See [video options](/docs/commands#video) for the JSON format.
+
+```bash
+ai image "a dragon" | ai video "animate this"
+cat scene.png | ai video "zoom out slowly"
+```
+
+Use one prompt-image source: stdin or `--image`. A first frame in `frameImages`
+takes precedence over that image, as in the SDK.
+
+### Audio
+
+`audio speak` reads stdin as text. `audio transcribe` reads stdin as binary audio:
+
+```bash
+echo "Ship the changelog" | ai audio speak -o changelog.mp3
+cat recording.mp3 | ai audio transcribe -o transcript.txt
+```
+
+### Decide
+
+`decide` reads finite input through EOF and evaluates named typed questions together.
+Text keeps whitespace; JSON objects and arrays remain one shared state. It always
+prints JSON answers and metadata in terminals and pipes, without writing files.
+
+```bash
+ai decide --boolean "refund=Refund requested?" < ticket.txt |
+  jq '.answers.refund.probability'
+ai decide --questions triage.json < ticket.json
+```
+
+Use `--input text` for literal JSON-looking text, or `--input json` to require JSON.
+See [Decide](/docs/decide) for question types, probability semantics, and format flags.
+
+## Stdout
+
+For generation commands, output behavior changes based on whether stdout is a TTY (interactive terminal) or a pipe:
+
+### Interactive (TTY)
+
+Saves to a file and prints the path to stderr:
+
+```bash
+ai text "hello"         # → saves <id>.md, prints "Saved to /path/<id>.md"
+ai image "a cat"        # → saves <id>.<format>
+ai video "ocean"        # → saves <id>.<format>
+ai audio speak "hello"  # → saves <id>.mp3
+```
+
+### Piped (non-TTY)
+
+A single image/video artifact writes raw bytes to stdout. Multiple image/video
+artifacts always save to separate files; use `--json -o ./renders/` for a manifest.
+Accompanying image-generation text is printed to stderr (or retained in JSON).
+Other generation commands write raw output for composability:
+
+```bash
+ai text "hello" | pbcopy                    # copy to clipboard
+ai image "a dragon" | ai video "animate"    # chain image → video
+ai text "hello" > response.md              # redirect to file
+ai audio speak "hello" > speech.mp3        # redirect audio bytes
+```
+
+## Output path
+
+Control where files are saved with `-o`:
+
+```bash
+ai image "a sunset" -o sunset.png          # specific file
+ai image "a sunset" -o ./renders/          # directory (auto-names files)
+ai audio transcribe call.mp3 -o call.txt   # transcript file
+```
+
+When `-o` points to a directory, files use response IDs when available and random 8-character names otherwise.
+
+The `AI_CLI_OUTPUT_DIR` environment variable sets a default directory for generated artifacts. `decide` always uses stdout and does not use this setting:
+
+```bash
+export AI_CLI_OUTPUT_DIR=~/ai-output
+ai image "a sunset"    # → saves to ~/ai-output/<id>.<format>
+```
+
+## JSON metadata
+
+Generation commands use `--json` to get structured metadata on stdout instead of raw output:
+
+```bash
+ai image "a sunset" --json
+```
+
+The main fields look like this; `generateImage` results also include `calls`
+and `batches` diagnostics, and `generateText` results with `--n` above 1 include
+`calls`:
+
+```json
+{
+  "elapsedMs": 3420,
+  "results": [
+    {
+      "model": "openai/gpt-image-2",
+      "elapsedMs": 3420,
+      "success": true,
+      "images": [{ "file": "/Users/you/resp_abc123.png", "mediaType": "image/png" }],
+      "warnings": []
+    }
+  ]
+}
+```
+
+<Callout type="info">
+  The `--json` flag is useful for scripts and CI pipelines that need to know where files were saved and whether generation succeeded.
+</Callout>
+
+Image/video manifests also retain SDK usage, provider metadata and response
+information. Image `calls` keep each response with its saved images, warnings,
+usage and provider metadata; artifacts stay in call order. Video outputs use
+`videos` instead of `images`. Errors include `name` and `message`, even with
+`--quiet`. For image/video generation, exit 1 means no model fully succeeded,
+even if partial media was saved; exit 2 means some models fully succeeded.
+Validation errors use `{ "success": false, "error": { "name": "Error", "message": "..." } }`.
+Text/audio retain their existing JSON format.

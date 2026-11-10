@@ -1,0 +1,84 @@
+---
+title: Troubleshooting
+description: Common issues and how to resolve them.
+---
+
+## Not signed in
+
+```
+Error: Not signed in to AI Gateway. Run `ai login`, or set AI_GATEWAY_API_KEY.
+```
+
+Run `ai login` to save an API key, or set `AI_GATEWAY_API_KEY`. If the error says AI Gateway rejected a key, create a new one and run `ai login` again.
+
+## Invalid model ID
+
+```
+Error: model ID must use printable ASCII characters without spaces
+```
+
+AI Gateway model IDs are sent as HTTP request metadata and use forms such as `openai/gpt-5.5`. Check the value passed to `--model` and any `AI_CLI_*_MODEL` environment variable for Unicode characters or embedded spaces.
+
+## Timeout errors
+
+Requests are aborted if they exceed the per-command timeout:
+
+| Command | Timeout |
+| --- | --- |
+| `text` | 120 seconds |
+| `image` | 300 seconds |
+| `video` | 600 seconds |
+| `audio speak` | 120 seconds |
+| `audio transcribe` | 120 seconds |
+
+Use `--timeout <seconds>` to allow a longer request without changing models. The value must be a positive integer. For example:
+
+```bash
+ai image --timeout 600 "a detailed sprite atlas"
+```
+
+If you are consistently hitting timeouts, a faster model variant is often the better fix (for example `bytedance/seedance-2.0-fast` instead of `bytedance/seedance-2.0`).
+
+## Image and video option migration
+
+`--count` is now `--n` for image/video. Image references use `--images`;
+video frames use `--frame-images` with SDK role names. Image quality and style
+belong in `--provider-options` JSON, using values supported by the selected
+model. See the [migration reference](/docs/commands#media-migration).
+
+Video uses SDK polling by default. For long jobs, use `ai video start` and
+`ai video status` to persist an operation and check it later. Requested durations
+and frame modes must still be supported by the model; check `ai models <model> --json`.
+
+## Version and upgrades
+
+Check your installed version:
+
+```bash
+ai --version
+```
+
+Upgrade to the latest release:
+
+```bash
+npm update -g ai-cli
+```
+
+## Gateway unreachable
+
+If the AI Gateway is unreachable, the `models` command will return an empty list and short-name resolution will be unavailable. Use fully-qualified model IDs (`provider/model-name`) to bypass model discovery. Image generation also requires an explicit `--api generateImage` or `--api generateText` when discovery fails or the selected model is missing from the image catalog, so the selected API cannot change silently. Known Quiver Arrow 2 SVG language-image models are an exception when the catalog is available: they use `generateText` even if absent from its image list. Video and other generation commands can use full model IDs.
+
+Check your network connection and verify the gateway status at [vercel.com/status](https://www.vercel.com/status).
+
+## No output / empty response [#no-output-empty-response]
+
+If a command exits with code 0 but produces no visible output, it likely wrote to a file. Check stderr for the "Saved to" message, or use `--json` to see structured metadata including the output path:
+
+```bash
+ai image "a sunset" --json
+```
+
+If an image is saved but does not appear inline, confirm that the terminal
+supports the Kitty graphics protocol and that `AI_CLI_PREVIEW` is not set to
+`0`. Image models can return JPEG or WebP data; ai-cli preserves that format
+in the saved file and converts it to PNG for Kitty previews automatically.

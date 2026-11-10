@@ -1,3 +1,4 @@
+import { errorMessage } from "./auth.js";
 import {
   supportsKittyGraphics,
   displayImage,
@@ -18,10 +19,21 @@ export interface RunJobsOptions {
   noun: string;
   format: OutputFormat;
   outputPath?: string;
+  extension?: string;
   quiet?: boolean;
   json?: boolean;
   concurrency: number;
   display?: boolean;
+  afterOutputs?: (outputs: RunJobOutput[]) => Promise<void> | void;
+}
+
+export interface RunJobOutput {
+  index: number;
+  model: string;
+  label: string;
+  data: Buffer | string;
+  file: string | null;
+  elapsed_ms: number;
 }
 
 export function buildJobs(models: string[], countPerModel: number): Job[] {
@@ -43,6 +55,7 @@ export interface RunJobsResult {
 export interface GeneratedOutput {
   data: Buffer | string;
   id?: string;
+  mediaType?: string;
 }
 
 type GenerateResult = Buffer | string | GeneratedOutput;
@@ -52,10 +65,21 @@ export async function runJobs(
   generate: (modelId: string) => Promise<GenerateResult>,
   opts: RunJobsOptions
 ): Promise<RunJobsResult> {
-  const { noun, format, outputPath, quiet, json, concurrency, display } = opts;
+  const {
+    noun,
+    format,
+    outputPath,
+    extension,
+    quiet,
+    json,
+    concurrency,
+    display,
+    afterOutputs,
+  } = opts;
 
   if (jobs.length === 1) {
-    const { modelId } = jobs[0];
+    const job = jobs[0];
+    const { modelId } = job;
     const progress = new Progress(quiet);
     const start = Date.now();
     progress.start(`Generating ${noun} with ${modelId}`);
@@ -71,8 +95,11 @@ export async function runJobs(
           format,
           outputPath,
           outputId: generated.id,
+          extension,
+          mediaType: generated.mediaType,
+          forceFile: true,
           quiet: true,
-          display,
+          display: false,
         });
         const meta = {
           elapsed_ms: elapsed,
@@ -89,14 +116,26 @@ export async function runJobs(
         };
         process.stdout.write(JSON.stringify(meta, null, 2) + "\n");
       } else {
-        await writeOutput({
+        const path = await writeOutput({
           data: generated.data,
           format,
           outputPath,
           outputId: generated.id,
+          extension,
+          mediaType: generated.mediaType,
           quiet,
           display,
         });
+        await afterOutputs?.([
+          {
+            index: 0,
+            model: modelId,
+            label: job.label,
+            data: generated.data,
+            file: path,
+            elapsed_ms: elapsed,
+          },
+        ]);
       }
     } catch (err) {
       progress.stop();
@@ -108,6 +147,7 @@ export async function runJobs(
   const multi = new MultiProgress(quiet);
   const start = Date.now();
   const shouldDisplay =
+    !json &&
     display !== false &&
     (format === "image" || format === "video") &&
     process.stdout.isTTY &&
@@ -124,6 +164,8 @@ export async function runJobs(
     elapsed_ms: number;
     file: string | null;
   }[] = [];
+  const collectOutputs = !json && Boolean(afterOutputs);
+  const outputs: RunJobOutput[] = [];
   const pendingDisplayBuffers: Buffer[] = [];
 
   await pMap(
@@ -141,11 +183,19 @@ export async function runJobs(
           outputPath,
           outputId: generated.id,
           suffix,
+          extension,
+          mediaType: generated.mediaType,
+          forceFile: Boolean(json),
           quiet: true,
           display: false,
         });
-        if (shouldDisplay && Buffer.isBuffer(generated.data))
-          pendingDisplayBuffers.push(generated.data);
+        if (shouldDisplay) {
+          pendingDisplayBuffers.push(
+            typeof generated.data === "string"
+              ? Buffer.from(generated.data)
+              : generated.data
+          );
+        }
         const savedMsg = path
           ? `Saved to ${path}`
           : `${noun[0].toUpperCase()}${noun.slice(1)} ${job.label} written to stdout`;
@@ -160,9 +210,19 @@ export async function runJobs(
           elapsed_ms: genElapsed,
           file: path,
         });
+        if (collectOutputs) {
+          outputs.push({
+            index: i,
+            model: job.modelId,
+            label: job.label,
+            data: generated.data,
+            file: path,
+            elapsed_ms: genElapsed,
+          });
+        }
       } catch (err: unknown) {
         const genElapsed = Date.now() - genStart;
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = errorMessage(err);
         multi.completeLine(
           lineIdxs[i],
           `${noun[0].toUpperCase()}${noun.slice(1)} ${job.label} failed: ${msg} (${formatElapsed(genElapsed)})`
@@ -181,10 +241,11 @@ export async function runJobs(
 
   if (json) {
     const totalElapsed = Date.now() - start;
+    const orderedResults = [...results].sort((a, b) => a.index - b.index);
     const meta = {
       elapsed_ms: totalElapsed,
-      count: results.filter((r) => r.success).length,
-      results: results.map((r) => ({
+      count: orderedResults.filter((r) => r.success).length,
+      results: orderedResults.map((r) => ({
         index: r.index + 1,
         model: r.model,
         elapsed_ms: r.elapsed_ms,
@@ -195,11 +256,15 @@ export async function runJobs(
     process.stdout.write(JSON.stringify(meta, null, 2) + "\n");
   }
 
-  for (const buf of pendingDisplayBuffers) {
+  if (collectOutputs) {
+    await afterOutputs?.([...outputs].sort((a, b) => a.index - b.index));
+  }
+
+  for (const data of pendingDisplayBuffers) {
     if (format === "video") {
-      await displayVideoFrame(buf);
+      await displayVideoFrame(data);
     } else {
-      displayImage(buf);
+      await displayImage(data);
     }
   }
 

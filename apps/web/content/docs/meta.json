@@ -1,0 +1,18 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "---Getting Started---",
+    "index",
+    "installation",
+    "configuration",
+    "providers",
+    "---Usage---",
+    "commands",
+    "decide",
+    "models",
+    "mcp",
+    "single",
+    "images",
+    "troubleshooting"
+  ]
+}

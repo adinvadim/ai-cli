@@ -1,161 +1,665 @@
-import { experimental_generateVideo as generateVideo } from "ai";
-import type { Command } from "commander";
+import { randomBytes } from "node:crypto";
+import { mkdir, writeFile, rename, rm, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
+import {
+  createDownload,
+  experimental_generateVideo as generateVideo,
+  experimental_startVideo as startVideo,
+  experimental_getVideoStatus as getVideoStatus,
+  type JSONValue,
+} from "ai";
+
+import type { Command } from "../lib/command.js";
 import {
   collectImageReference,
   loadImageReferences,
-  type ImageReference,
 } from "../lib/image-references.js";
-import { buildJobs, runJobs } from "../lib/jobs.js";
-import { fetchModels, resolveModels } from "../lib/models.js";
+import {
+  artifact,
+  errorDetails,
+  runMediaBatches,
+  runMediaJobs,
+  type MediaFailure,
+} from "../lib/media-jobs.js";
+import {
+  addGatewayOptions,
+  addMediaOptions,
+  isObject,
+  mediaSettings,
+  readJsonObject,
+  validateUrl,
+  type MediaOptions,
+} from "../lib/media-options.js";
+import { resolveModels } from "../lib/models.js";
 import {
   parsePositiveInt,
   parseAspectRatio,
   parseNonNegativeFloat,
+  parseSize,
 } from "../lib/parse.js";
-import { resolveProvider, videoModel } from "../lib/providers.js";
+import { resolveProviderName } from "../lib/providers/index.js";
 import { responseIdFromHeaders } from "../lib/response-id.js";
 import { readStdin } from "../lib/stdin.js";
+import { addTimeoutOption, timeoutMs, parseTimerMs } from "../lib/timeout.js";
+import { readFrameImages, readInputReferences } from "../lib/video-inputs.js";
 
 const DEFAULT_CONCURRENCY = 2;
-const DEFAULT_TIMEOUT_MS = 300_000;
+const DEFAULT_TIMEOUT_MS = 600_000;
 
-interface VideoOptions {
-  model?: string;
-  output?: string;
+interface VideoOptions extends MediaOptions {
   image?: string[];
-  count?: string;
+  frameImages?: string;
+  inputReferences?: string;
+  maxVideosPerCall?: string;
   aspectRatio?: string;
+  resolution?: string;
   duration?: string;
-  quiet?: boolean;
-  json?: boolean;
-  concurrency?: string;
-  preview?: boolean;
-  provider?: string;
+  fps?: string;
+  generateAudio?: boolean;
+  pollIntervalMs?: string;
+  pollTimeoutMs?: string;
+  downloadMaxBytes?: string;
+  webhookUrl?: string;
+}
+
+function generationCommand(command: Command, start = false) {
+  return addTimeoutOption(
+    addMediaOptions(
+      command.argument("[prompt]", "Video prompt"),
+      DEFAULT_CONCURRENCY,
+      start
+    )
+      .option(
+        "-i, --image <path-or-url>",
+        "SDK prompt.image (or pipe image bytes)",
+        collectImageReference,
+        []
+      )
+      .option(
+        "--frame-images <path>",
+        "JSON SDK frameImages array with first_frame / last_frame roles"
+      )
+      .option(
+        "--input-references <path>",
+        "JSON SDK inputReferences array; specify mediaType for video URLs"
+      )
+      .option(
+        "--max-videos-per-call <n>",
+        "SDK maxVideosPerCall batching limit"
+      )
+      .option("--aspect-ratio <W:H|adaptive>", "SDK aspectRatio")
+      .option("--resolution <WxH>", "SDK resolution (e.g. 1920x1080)")
+      .option("--duration <seconds>", "SDK duration in seconds")
+      .option("--fps <n>", "SDK frames per second")
+      .option("--generate-audio", "Request generated audio")
+      .option("--no-generate-audio", "Disable generated audio"),
+    DEFAULT_TIMEOUT_MS
+  );
+}
+
+async function generationInputs(
+  rawPrompt: string | undefined,
+  opts: VideoOptions
+) {
+  const settings = await mediaSettings(opts, DEFAULT_CONCURRENCY);
+  const generationOptions = videoGenerationOptions(opts);
+  const maxVideosPerCall =
+    opts.maxVideosPerCall === undefined
+      ? undefined
+      : parsePositiveInt(opts.maxVideosPerCall, "max-videos-per-call");
+  const frameImages = opts.frameImages
+    ? await readFrameImages(opts.frameImages)
+    : undefined;
+  const inputReferences = opts.inputReferences
+    ? await readInputReferences(opts.inputReferences)
+    : undefined;
+  const prompt = rawPrompt?.trim() || undefined;
+  const stdin = await readStdin();
+  if ((opts.image?.length ?? 0) + (stdin ? 1 : 0) > 1)
+    throw new Error(
+      "Use one --image or piped image; use --frame-images for frame roles and --input-references for multiple references"
+    );
+  const image = stdin ?? (await loadImageReferences(opts.image ?? []))[0];
+  if (!prompt && !image && !frameImages?.length && !inputReferences?.length)
+    throw new Error(
+      "prompt, --image, --frame-images, or --input-references is required"
+    );
+  return {
+    settings,
+    request: {
+      ...generationOptions,
+      n: settings.n,
+      seed: settings.seed,
+      maxRetries: settings.maxRetries,
+      headers: settings.headers,
+      providerOptions: settings.providerOptions,
+      maxVideosPerCall,
+      prompt: image ? { image, text: prompt } : (prompt ?? ""),
+      frameImages,
+      inputReferences,
+    },
+  };
 }
 
 export function registerVideoCommand(program: Command) {
-  program
-    .command("video")
-    .description("Generate a video from a prompt")
-    .argument("[prompt]", "The prompt to generate a video from")
+  const command = generationCommand(
+    program
+      .command("video")
+      .description(
+        "Generate video with AI SDK polling, or start/check an asynchronous operation"
+      )
+  )
+    .option("--poll-interval-ms <ms>", "SDK poll.intervalMs (default: 5000)")
     .option(
-      "-m, --model <model>",
-      "Model ID (creator/model-name), comma-separated for multi-model"
-    )
-    .option("-o, --output <path>", "Output file path or directory")
-    .option(
-      "-i, --image <path-or-url>",
-      "Image input path or URL",
-      collectImageReference,
-      []
-    )
-    .option("-n, --count <n>", "Number of videos per model (default: 1)")
-    .option("--aspect-ratio <W:H>", "Aspect ratio (e.g. 16:9)")
-    .option("--duration <seconds>", "Video duration in seconds")
-    .option("-q, --quiet", "Suppress progress output")
-    .option("--json", "Output metadata as JSON")
-    .option(
-      "--no-preview",
-      "Disable inline video frame preview in supported terminals"
+      "--poll-timeout-ms <ms>",
+      "SDK poll.timeoutMs (default: --timeout in milliseconds)"
     )
     .option(
-      "-p, --concurrency <n>",
-      `Max parallel generations (default: ${DEFAULT_CONCURRENCY})`
-    )
-    .option("--provider <provider>", "Provider: gateway, openrouter")
-    .action(async (rawPrompt: string | undefined, opts: VideoOptions) => {
-      const prompt = rawPrompt?.trim() || undefined;
-      const stdin = await readStdin();
-      const imageReferenceInputs = opts.image ?? [];
-      if (!prompt && !stdin && imageReferenceInputs.length === 0) {
-        process.stderr.write(
-          "Error: prompt or image is required (provide a prompt, --image, or pipe an image via stdin)\n"
+      "--download-max-bytes <bytes>",
+      "SDK createDownload maxBytes (default: 2 GiB)"
+    );
+  command.action(async (prompt: string | undefined, opts: VideoOptions) => {
+    const poll = {
+      intervalMs:
+        opts.pollIntervalMs === undefined
+          ? undefined
+          : parseTimerMs(opts.pollIntervalMs, "poll-interval-ms"),
+      timeoutMs:
+        opts.pollTimeoutMs === undefined
+          ? timeoutMs(opts.timeout)
+          : parseTimerMs(opts.pollTimeoutMs, "poll-timeout-ms"),
+    };
+    const download = createDownload({
+      maxBytes:
+        opts.downloadMaxBytes === undefined
+          ? undefined
+          : parsePositiveInt(opts.downloadMaxBytes, "download-max-bytes"),
+    });
+    const { settings, request } = await generationInputs(prompt, opts);
+    const catalog = await settings.provider.catalog();
+    const models = resolveModels(
+      "video",
+      opts.model,
+      catalog.video,
+      settings.provider.defaults
+    );
+    await runMediaJobs(
+      models,
+      async (modelId) => {
+        const abortSignal = AbortSignal.timeout(timeoutMs(opts.timeout));
+        const videoModel = settings.provider.videoModel(modelId);
+        const batches = await runMediaBatches(
+          settings.n,
+          // Without --max-videos-per-call, respect the model's own limit.
+          request.maxVideosPerCall ??
+            (typeof videoModel === "object" &&
+            typeof videoModel.maxVideosPerCall === "number"
+              ? videoModel.maxVideosPerCall
+              : undefined),
+          async (count) => {
+            const failedDownloads = new Map<
+              string,
+              ReturnType<typeof errorDetails>
+            >();
+            const result = await generateVideo({
+              ...request,
+              n: count,
+              maxVideosPerCall: count,
+              model: videoModel,
+              poll,
+              download: async (options) => {
+                try {
+                  return await download(options);
+                } catch (error) {
+                  // The SDK discards every video in a call if one URL download
+                  // rejects. A unique placeholder lets it return the siblings.
+                  const placeholder = randomBytes(32);
+                  failedDownloads.set(
+                    placeholder.toString("hex"),
+                    errorDetails(error)
+                  );
+                  return { data: placeholder, mediaType: "video/mp4" };
+                }
+              },
+              abortSignal,
+            });
+            const outputs = result.videos.map((file, index) => {
+              const bytes = file.uint8Array;
+              const error =
+                bytes.length === 32
+                  ? failedDownloads.get(Buffer.from(bytes).toString("hex"))
+                  : undefined;
+              return { file, index: index + 1, error };
+            });
+            return {
+              result,
+              videos: outputs.flatMap(({ file, error }) =>
+                error ? [] : [file]
+              ),
+              downloadFailures: outputs.flatMap(({ index, error }) =>
+                error ? [{ index, error }] : []
+              ),
+            };
+          }
         );
-        process.exit(1);
-      }
-
-      let referenceImages: ImageReference[] = [];
-      try {
-        referenceImages = await loadImageReferences(imageReferenceInputs);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`Error: ${message}\n`);
-        process.exit(1);
-      }
-
-      const images: ImageReference[] = [
-        ...(stdin ? [new Uint8Array(stdin)] : []),
-        ...referenceImages,
-      ];
-      if (images.length > 1) {
-        process.stderr.write(
-          "Error: video generation accepts one input image; provide one --image value or pipe one image via stdin\n"
+        const completed = batches.flatMap((batch) =>
+          batch.result ? [{ ...batch, ...batch.result }] : []
         );
-        process.exit(1);
+        let requestedBefore = 0;
+        const failures: MediaFailure[] = [];
+        for (const batch of batches) {
+          if (batch.error) {
+            failures.push({
+              kind: "batch",
+              index: batch.index,
+              requested: batch.requested,
+              error: batch.error,
+            });
+          } else {
+            failures.push(
+              ...batch.result.downloadFailures.map(({ index, error }) => ({
+                kind: "download" as const,
+                index: requestedBefore + index,
+                error,
+              }))
+            );
+          }
+          requestedBefore += batch.requested;
+        }
+        return {
+          artifacts: completed.flatMap(({ result, videos }) =>
+            videos.map((file) =>
+              artifact(
+                file,
+                result.responses.length === 1
+                  ? responseIdFromHeaders(result.responses[0]?.headers)
+                  : undefined
+              )
+            )
+          ),
+          warnings: completed.flatMap(({ result }) => result.warnings),
+          responses: completed.flatMap(({ result }) => result.responses),
+          providerMetadata: mergeVideoMetadata(
+            completed.map(({ result }) => result.providerMetadata)
+          ),
+          batches: completed.map(({ index, requested, result, videos }) => ({
+            index,
+            requested,
+            received: videos.length,
+            warnings: result.warnings,
+            responses: result.responses,
+            providerMetadata: result.providerMetadata,
+          })),
+          failures,
+        };
+      },
+      {
+        ...opts,
+        n: settings.n,
+        concurrency: settings.concurrency,
+        format: "video",
       }
+    );
+  });
 
-      let videoPrompt: string | { image: ImageReference; text?: string } =
-        prompt!;
-      if (images.length > 0) {
-        videoPrompt = prompt
-          ? { image: images[0]!, text: prompt }
-          : { image: images[0]! };
+  generationCommand(
+    command
+      .command("start")
+      .description(
+        "Start one asynchronous video operation and emit/persist its JSON reference"
+      ),
+    true
+  )
+    .option(
+      "--webhook-url <url>",
+      "SDK webhookUrl for completion notifications"
+    )
+    .action(async (prompt: string | undefined, opts: VideoOptions) => {
+      const webhookUrl =
+        opts.webhookUrl === undefined
+          ? undefined
+          : validateUrl(opts.webhookUrl, "webhook-url");
+      const destination = opts.output ? resolve(opts.output) : undefined;
+      if (destination) {
+        await mkdir(dirname(destination), { recursive: true });
+        const existing = await stat(destination).catch(
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined;
+            throw error;
+          }
+        );
+        if (existing?.isDirectory())
+          throw new Error(
+            "video start --output must be a JSON file, not a directory"
+          );
       }
-
-      const provider = resolveProvider(opts.provider);
-      const providerModels = await fetchModels(provider);
+      const { settings, request } = await generationInputs(prompt, opts);
+      const catalog = await settings.provider.catalog();
       const models = resolveModels(
         "video",
         opts.model,
-        providerModels.video,
-        provider
+        catalog.video,
+        settings.provider.defaults
       );
-      const countPerModel = opts.count
-        ? parsePositiveInt(opts.count, "count")
-        : 1;
-      const aspectRatio = opts.aspectRatio
-        ? parseAspectRatio(opts.aspectRatio)
-        : undefined;
-      const duration = opts.duration
-        ? parseNonNegativeFloat(opts.duration, "duration")
-        : undefined;
+      if (models.length !== 1)
+        throw new Error("video start accepts one model per operation");
+      const model = models[0]!;
+      const videoModel = settings.provider.videoModel(model);
+      if (
+        typeof videoModel === "object" &&
+        (!("doStart" in videoModel) || !videoModel.doStart)
+      )
+        throw new Error(
+          `${settings.provider.label} cannot start asynchronous video operations; use \`ai video\` instead`
+        );
+      const result = await startVideo({
+        ...request,
+        model: videoModel,
+        webhookUrl,
+        abortSignal: AbortSignal.timeout(timeoutMs(opts.timeout)),
+      });
+      // Record the provider so `video status` checks the same backend.
+      const data =
+        JSON.stringify(
+          { model, provider: settings.provider.name, ...result },
+          null,
+          2
+        ) + "\n";
+      // Emit first so a filesystem failure cannot lose an already-started job.
+      process.stdout.write(data);
+      if (destination) {
+        const temporary = `${destination}.${crypto.randomUUID()}.tmp`;
+        try {
+          await writeFile(temporary, data, { mode: 0o600, flag: "wx" });
+          await rename(temporary, destination);
+        } catch (error) {
+          // Preserve one valid operation JSON on stdout even if persistence fails.
+          process.stderr.write(
+            `Error: could not save operation to ${destination}: ${error instanceof Error ? error.message : String(error)}\n`
+          );
+          process.exitCode = 1;
+        } finally {
+          await rm(temporary, { force: true }).catch(() => {});
+        }
+      }
+    });
 
-      const jobs = buildJobs(models, countPerModel);
-
-      const { total, failed } = await runJobs(
-        jobs,
-        async (modelId) => {
-          const abort = AbortSignal.timeout(DEFAULT_TIMEOUT_MS);
-          const result = await generateVideo({
-            headers: {
-              "http-referer": "https://github.com/vercel-labs/ai-cli",
-              "x-title": "ai-cli",
-            },
-            model: videoModel(provider, modelId),
-            prompt: videoPrompt,
-            abortSignal: abort,
-            aspectRatio,
-            duration,
-          });
+  const statusCommand = addGatewayOptions(
+    command
+      .command("status")
+      .description(
+        "Check a saved SDK operation; returns JSON without downloading by default"
+      )
+      .argument("<operation-file>", "JSON emitted by video start")
+      .option("--download", "Download completed videos")
+      .option(
+        "--download-max-bytes <bytes>",
+        "SDK createDownload maxBytes (default: 2 GiB)"
+      )
+      .option("-o, --output <path>", "Downloaded video file or directory")
+      .option(
+        "--json",
+        "JSON status / downloaded artifact manifest (always enabled)"
+      )
+      .option("-q, --quiet", "Suppress progress")
+      .option("--no-preview", "Disable previews")
+  );
+  addTimeoutOption(statusCommand, DEFAULT_TIMEOUT_MS).action(
+    async (
+      path: string | undefined,
+      opts: MediaOptions & { download?: boolean; downloadMaxBytes?: string }
+    ) => {
+      if (!path) throw new Error("video status requires an operation file");
+      if (opts.output && !opts.download)
+        throw new Error("video status --output requires --download");
+      const download = createDownload({
+        maxBytes:
+          opts.downloadMaxBytes === undefined
+            ? undefined
+            : parsePositiveInt(opts.downloadMaxBytes, "download-max-bytes"),
+      });
+      const saved = await readJsonObject(path, "operation");
+      if (saved.provider !== undefined && typeof saved.provider !== "string")
+        throw new Error("Operation file provider must be a string");
+      // Under `ai mcp`, the operation file is agent-supplied: keep the
+      // server's provider instead of the one recorded in the file.
+      const fromMcp = process.env.AI_CLI_MCP_SERVER === "1";
+      if (
+        fromMcp &&
+        saved.provider !== undefined &&
+        saved.provider !== resolveProviderName(opts.provider)
+      )
+        throw new Error(
+          `Operation file uses provider ${saved.provider}, but this MCP server uses ${resolveProviderName(opts.provider)}`
+        );
+      const settings = await mediaSettings({
+        ...opts,
+        provider: opts.provider ?? (fromMcp ? undefined : saved.provider),
+      });
+      if (
+        typeof saved.model !== "string" ||
+        !saved.model.trim() ||
+        !("operation" in saved)
+      )
+        throw new Error(
+          "Operation file must contain model and operation from video start"
+        );
+      const model = resolveModels("video", saved.model);
+      if (model.length !== 1)
+        throw new Error("Operation file must contain one model");
+      const abortSignal = AbortSignal.timeout(timeoutMs(opts.timeout));
+      const result = await getVideoStatus(
+        settings.provider.videoModel(model[0]!),
+        {
+          operation: saved.operation as JSONValue,
+          headers: settings.headers,
+          maxRetries: settings.maxRetries,
+          abortSignal,
+        }
+      );
+      if (!opts.download || result.status !== "completed") {
+        process.stdout.write(
+          JSON.stringify({ model: model[0], ...result }, null, 2) + "\n"
+        );
+        if (result.status === "error") {
+          process.stderr.write(`Error: ${result.error}\n`);
+          process.exitCode = 1;
+        }
+        return;
+      }
+      await runMediaJobs(
+        model,
+        async () => {
+          const downloads = await Promise.allSettled(
+            result.videos.map(async (video) => {
+              if (video.type === "url") {
+                const file = await download({
+                  url: new URL(video.url),
+                  abortSignal,
+                });
+                const data = Buffer.from(file.data);
+                return {
+                  data,
+                  mediaType:
+                    usableVideoMediaType(video.mediaType) ||
+                    usableVideoMediaType(file.mediaType) ||
+                    detectVideoMediaType(data) ||
+                    "video/mp4",
+                };
+              }
+              return {
+                data:
+                  video.type === "base64"
+                    ? Buffer.from(video.data, "base64")
+                    : Buffer.from(video.data),
+                mediaType: video.mediaType || "video/mp4",
+              };
+            })
+          );
           return {
-            data: Buffer.from(result.video.uint8Array),
-            id: responseIdFromHeaders(result.responses[0]?.headers),
+            status: result.status,
+            response: result.response,
+            warnings: result.warnings,
+            providerMetadata: result.providerMetadata,
+            artifacts: downloads.flatMap((item) =>
+              item.status === "fulfilled" ? [item.value] : []
+            ),
+            failures: downloads.flatMap((item, index) =>
+              item.status === "rejected"
+                ? [
+                    {
+                      kind: "download" as const,
+                      index: index + 1,
+                      error: errorDetails(item.reason),
+                    },
+                  ]
+                : []
+            ),
           };
         },
         {
-          noun: "video",
+          ...opts,
+          n: result.videos.length,
+          concurrency: 1,
+          json: true,
           format: "video",
-          outputPath: opts.output,
-          quiet: opts.quiet,
-          json: opts.json,
-          display: opts.preview,
-          concurrency: opts.concurrency
-            ? parsePositiveInt(opts.concurrency, "concurrency")
-            : DEFAULT_CONCURRENCY,
         }
       );
-      if (failed === total) process.exit(1);
-      if (failed > 0) process.exit(2);
-    });
+    }
+  );
+}
+
+function usableVideoMediaType(value: string | undefined): string | undefined {
+  const mediaType = value?.trim();
+  return mediaType &&
+    mediaType.split(";", 1)[0]?.trim().toLowerCase() !==
+      "application/octet-stream"
+    ? mediaType
+    : undefined;
+}
+
+function detectVideoMediaType(data: Buffer): string | undefined {
+  if (
+    data.length >= 4 &&
+    data[0] === 0x1a &&
+    data[1] === 0x45 &&
+    data[2] === 0xdf &&
+    data[3] === 0xa3
+  )
+    return "video/webm";
+  if (data.length >= 12 && data.toString("ascii", 4, 8) === "ftyp")
+    return data.toString("ascii", 8, 12) === "qt  "
+      ? "video/quicktime"
+      : "video/mp4";
+  if (data.length >= 4 && data.toString("ascii", 0, 4) === "OggS")
+    return "video/ogg";
+  return undefined;
+}
+
+function mergeVideoMetadata(
+  sources: Array<Record<string, unknown>>
+): Record<string, unknown> {
+  const combined: Record<string, unknown> = {};
+  for (const source of sources) {
+    for (const [provider, value] of Object.entries(source)) {
+      const previous = Object.hasOwn(combined, provider)
+        ? combined[provider]
+        : undefined;
+      const merged =
+        isObject(previous) && isObject(value)
+          ? {
+              ...previous,
+              ...value,
+              ...(Array.isArray(previous.videos) && Array.isArray(value.videos)
+                ? { videos: [...previous.videos, ...value.videos] }
+                : {}),
+              ...(provider === "gateway"
+                ? Object.fromEntries(
+                    GATEWAY_COST_KEYS.flatMap((key) => {
+                      const total = addDecimalStrings(
+                        previous[key],
+                        value[key]
+                      );
+                      return total === undefined ? [] : [[key, total]];
+                    })
+                  )
+                : {}),
+            }
+          : value;
+      Object.defineProperty(combined, provider, {
+        value: merged,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  return combined;
+}
+
+const GATEWAY_COST_KEYS = [
+  "cost",
+  "gatewayCost",
+  "inferenceCost",
+  "inputInferenceCost",
+  "marketCost",
+  "outputInferenceCost",
+  "surchargeCost",
+];
+
+function addDecimalStrings(left: unknown, right: unknown): string | undefined {
+  if (
+    typeof left !== "string" ||
+    typeof right !== "string" ||
+    !/^\d+(?:\.\d+)?$/.test(left) ||
+    !/^\d+(?:\.\d+)?$/.test(right)
+  )
+    return undefined;
+  const [leftInteger, leftFraction = ""] = left.split(".");
+  const [rightInteger, rightFraction = ""] = right.split(".");
+  const precision = Math.max(leftFraction.length, rightFraction.length);
+  const total = (
+    BigInt(leftInteger + leftFraction.padEnd(precision, "0")) +
+    BigInt(rightInteger + rightFraction.padEnd(precision, "0"))
+  )
+    .toString()
+    .padStart(precision + 1, "0");
+  return precision === 0
+    ? total
+    : `${total.slice(0, -precision)}.${total.slice(-precision)}`.replace(
+        /\.?0+$/,
+        ""
+      );
+}
+
+export function videoGenerationOptions(
+  opts: Pick<
+    VideoOptions,
+    "aspectRatio" | "resolution" | "duration" | "fps" | "generateAudio"
+  >
+) {
+  const duration =
+    opts.duration === undefined
+      ? undefined
+      : parseNonNegativeFloat(opts.duration, "duration");
+  if (duration === 0) throw new Error("--duration must be greater than zero");
+  const fps =
+    opts.fps === undefined ? undefined : parseNonNegativeFloat(opts.fps, "fps");
+  if (fps === 0) throw new Error("--fps must be greater than zero");
+  return {
+    aspectRatio:
+      opts.aspectRatio === "adaptive"
+        ? ("adaptive" as const)
+        : opts.aspectRatio === undefined
+          ? undefined
+          : parseAspectRatio(opts.aspectRatio),
+    resolution:
+      opts.resolution === undefined
+        ? undefined
+        : parseSize(opts.resolution, "resolution"),
+    duration,
+    fps,
+    generateAudio: opts.generateAudio,
+  };
 }

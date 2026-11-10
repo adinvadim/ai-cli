@@ -1,7 +1,28 @@
-import type { Command } from "commander";
+import type { Command } from "../lib/command.js";
+import {
+  formatLatency,
+  formatPerUnitPrice,
+  formatPricePerMillion,
+  formatReleaseDate,
+  formatThroughput,
+  formatTokenCount,
+  formatUptime,
+  formatWebSearchPrice,
+} from "../lib/format.js";
+import {
+  addGatewayConnectionOptions,
+  addProviderOption,
+  mediaSettings,
+  type MediaOptions,
+} from "../lib/media-options.js";
+import {
+  expandModelId,
+  fetchModelEndpoints,
+  type Modality,
+  type ModelEntry,
+} from "../lib/models.js";
 
-import { fetchModels, type Modality, type ModelEntry } from "../lib/models.js";
-import { resolveProvider } from "../lib/providers.js";
+type ModelFilter = Modality | "audio";
 
 function groupByCreator(models: ModelEntry[]): Map<string, ModelEntry[]> {
   const groups = new Map<string, ModelEntry[]>();
@@ -19,92 +40,262 @@ function modelName(id: string): string {
   return slash !== -1 ? id.slice(slash + 1) : id;
 }
 
+function pricingString(pricing: ModelEntry["pricing"], key: string) {
+  const value = pricing?.[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+async function showModelInfo(
+  input: string,
+  json: boolean,
+  settings: Awaited<ReturnType<typeof mediaSettings>>
+): Promise<void> {
+  const gatewayModels = await settings.provider.catalog();
+  const id = expandModelId(input, gatewayModels.lookup);
+  const entry = gatewayModels.lookup.find((m) => m.id === id);
+  if (!entry) {
+    process.stderr.write(
+      `Error: model not found: ${input}\nRun "ai models" to list available models\n`
+    );
+    process.exit(1);
+  }
+
+  // Per-endpoint routing stats are an AI Gateway feature.
+  const endpointsInfo =
+    settings.provider.name === "gateway"
+      ? await fetchModelEndpoints(entry.id, settings.catalogOptions)
+      : null;
+
+  if (json) {
+    const output = {
+      ...entry,
+      id: entry.id,
+      ...(entry.name ? { name: entry.name } : {}),
+      ...(entry.description ? { description: entry.description } : {}),
+      creator: entry.creator,
+      capabilities: entry.capabilities,
+      ...(entry.tags ? { tags: entry.tags } : {}),
+      ...(entry.contextWindow != null
+        ? { contextWindow: entry.contextWindow }
+        : {}),
+      ...(entry.maxTokens != null ? { maxTokens: entry.maxTokens } : {}),
+      ...(entry.released != null ? { released: entry.released } : {}),
+      ...(entry.pricing ? { pricing: entry.pricing } : {}),
+      ...(endpointsInfo && endpointsInfo.endpoints.length > 0
+        ? { endpoints: endpointsInfo.endpoints }
+        : {}),
+    };
+    process.stdout.write(JSON.stringify(output, null, 2) + "\n");
+    return;
+  }
+
+  process.stdout.write(
+    entry.name ? `\n${entry.name}  ${entry.id}\n` : `\n${entry.id}\n`
+  );
+
+  const meta: string[] = [];
+  if (entry.released != null)
+    meta.push(`Released ${formatReleaseDate(entry.released)}`);
+  if (entry.tags) meta.push(...entry.tags);
+  if (meta.length > 0) process.stdout.write(`${meta.join(" · ")}\n`);
+  if (entry.description) process.stdout.write(`\n${entry.description}\n`);
+
+  const rows: [string, string][] = [];
+  if (entry.contextWindow)
+    rows.push(["Context", formatTokenCount(entry.contextWindow)]);
+  if (entry.maxTokens)
+    rows.push(["Max output", formatTokenCount(entry.maxTokens)]);
+
+  const tokenPrices: [string, string][] = [
+    ["Input", "input"],
+    ["Output", "output"],
+    ["Cache read", "input_cache_read"],
+    ["Cache write", "input_cache_write"],
+  ];
+  for (const [label, key] of tokenPrices) {
+    const value = pricingString(entry.pricing, key);
+    if (value) rows.push([label, formatPricePerMillion(value)]);
+  }
+  const webSearch = pricingString(entry.pricing, "web_search");
+  if (webSearch && Number.parseFloat(webSearch) > 0)
+    rows.push(["Web search", formatWebSearchPrice(webSearch)]);
+  const imagePrice = pricingString(entry.pricing, "image");
+  if (imagePrice) rows.push(["Image", formatPerUnitPrice(imagePrice, "image")]);
+
+  if (rows.length > 0) {
+    const width = Math.max(...rows.map(([label]) => label.length));
+    process.stdout.write("\n");
+    for (const [label, value] of rows) {
+      process.stdout.write(`  ${label.padEnd(width + 2)}${value}\n`);
+    }
+  }
+
+  const endpoints = endpointsInfo?.endpoints ?? [];
+  if (endpoints.length > 0) {
+    const table: string[][] = [
+      ["provider", "context", "latency", "throughput", "uptime"],
+    ];
+    for (const ep of endpoints) {
+      table.push([
+        ep.provider_name ?? "unknown",
+        ep.context_length ? formatTokenCount(ep.context_length) : "—",
+        ep.latency_last_1h?.p50 != null
+          ? formatLatency(ep.latency_last_1h.p50)
+          : "—",
+        ep.throughput_last_1h?.p50 != null
+          ? formatThroughput(ep.throughput_last_1h.p50)
+          : "—",
+        ep.uptime_last_1d != null ? formatUptime(ep.uptime_last_1d) : "—",
+      ]);
+    }
+    const widths = table[0].map((_, col) =>
+      Math.max(...table.map((row) => row[col].length))
+    );
+    process.stdout.write("\nProviders\n");
+    for (const row of table) {
+      const line = row
+        .map((cell, col) => cell.padEnd(widths[col] + 2))
+        .join("")
+        .trimEnd();
+      process.stdout.write(`  ${line}\n`);
+    }
+  }
+
+  process.stdout.write("\n");
+}
+
 export function registerModelsCommand(program: Command) {
-  program
+  const command = program
     .command("models")
-    .description("List available models")
-    .option("--type <type>", "Filter by type: text, image, video")
+    .description("List available models from the selected provider")
+    .argument(
+      "[model]",
+      "Show detailed info for a model (e.g. anthropic/claude-opus-4.6)"
+    )
+    .option(
+      "--type <type>",
+      "Filter by type: text, image, video, audio, speech, transcription, evaluation"
+    )
     .option("--creator <name>", "Filter by creator (e.g. openai, google)")
-    .option("--provider <provider>", "Provider: gateway, openrouter")
-    .option("--json", "Output as JSON (includes descriptions)")
-    .action(
-      async (opts: {
+    .option("--json", "Output as JSON (includes native Gateway capabilities)");
+  addGatewayConnectionOptions(addProviderOption(command)).action(
+    async (
+      model: string | undefined,
+      opts: Partial<MediaOptions> & {
         type?: string;
         creator?: string;
-        provider?: string;
         json?: boolean;
-      }) => {
-        const validTypes = ["text", "image", "video"];
-        const filterType = opts.type?.toLowerCase() as Modality | undefined;
-        if (filterType && !validTypes.includes(filterType)) {
+      }
+    ) => {
+      const settings = await mediaSettings(opts);
+      if (model) {
+        if (opts.type || opts.creator) {
           process.stderr.write(
-            `Error: --type must be one of: ${validTypes.join(", ")} (got "${opts.type}")\n`
+            "Error: --type and --creator cannot be used with a model argument\n"
           );
           process.exit(1);
         }
-        const filterCreator = opts.creator?.toLowerCase();
+        await showModelInfo(model, opts.json ?? false, settings);
+        return;
+      }
+      const validTypes = [
+        "text",
+        "image",
+        "video",
+        "audio",
+        "speech",
+        "transcription",
+        "evaluation",
+      ];
+      const filterType = opts.type?.toLowerCase() as ModelFilter | undefined;
+      if (filterType && !validTypes.includes(filterType)) {
+        process.stderr.write(
+          `Error: --type must be one of: ${validTypes.join(", ")} (got "${opts.type}")\n`
+        );
+        process.exit(1);
+      }
+      const filterCreator = opts.creator?.toLowerCase();
 
-        const provider = resolveProvider(opts.provider);
-        const providerModels = await fetchModels(provider);
+      const gatewayModels = await settings.provider.catalog();
 
-        if (opts.json) {
-          let entries = providerModels.all;
-          if (filterType) {
-            entries = entries.filter((m) =>
-              m.capabilities.includes(filterType)
-            );
-          }
-          if (filterCreator) {
-            entries = entries.filter(
-              (m) => m.creator.toLowerCase() === filterCreator
-            );
-          }
-          const output = entries.map((m) => ({
-            id: m.id,
-            ...(m.name ? { name: m.name } : {}),
-            ...(m.description ? { description: m.description } : {}),
-            creator: m.creator,
-            capabilities: m.capabilities,
-            ...(m.pricing ? { pricing: m.pricing } : {}),
-          }));
-          process.stdout.write(JSON.stringify(output, null, 2) + "\n");
-          return;
+      if (opts.json) {
+        let entries = gatewayModels.all;
+        if (filterType) {
+          entries = entries.filter((m) =>
+            filterType === "audio"
+              ? m.capabilities.includes("speech") ||
+                m.capabilities.includes("transcription")
+              : m.capabilities.includes(filterType)
+          );
         }
-
-        const sections: { title: string; entries: ModelEntry[] }[] = [];
-        if (!filterType || filterType === "text")
-          sections.push({ title: "Text", entries: providerModels.text });
-        if (!filterType || filterType === "image")
-          sections.push({ title: "Image", entries: providerModels.image });
-        if (!filterType || filterType === "video")
-          sections.push({ title: "Video", entries: providerModels.video });
-
-        let totalCount = 0;
-        for (const section of sections) {
-          let entries = section.entries;
-          if (filterCreator) {
-            entries = entries.filter(
-              (m) => m.creator.toLowerCase() === filterCreator
-            );
-          }
-          const grouped = groupByCreator(entries);
-          const count = [...grouped.values()].reduce((s, m) => s + m.length, 0);
-          if (count === 0) continue;
-          totalCount += count;
-          process.stdout.write(`\n${section.title} models (${count}):\n`);
-          for (const [creator, models] of grouped) {
-            process.stdout.write(`\n  ${creator}\n`);
-            for (const m of models) {
-              process.stdout.write(`    ${modelName(m.id)}\n`);
-            }
-          }
+        if (filterCreator) {
+          entries = entries.filter(
+            (m) => m.creator.toLowerCase() === filterCreator
+          );
         }
+        const output = entries.map((m) => ({
+          ...m,
+          id: m.id,
+          ...(m.name ? { name: m.name } : {}),
+          ...(m.description ? { description: m.description } : {}),
+          creator: m.creator,
+          capabilities: m.capabilities,
+          ...(m.pricing ? { pricing: m.pricing } : {}),
+        }));
+        process.stdout.write(JSON.stringify(output, null, 2) + "\n");
+        return;
+      }
 
-        if (totalCount === 0) {
-          process.stderr.write("No models found matching filters\n");
-        } else {
-          process.stdout.write("\n");
+      const sections: { title: string; entries: ModelEntry[] }[] = [];
+      if (!filterType || filterType === "text")
+        sections.push({ title: "Text", entries: gatewayModels.text });
+      if (!filterType || filterType === "image")
+        sections.push({ title: "Image", entries: gatewayModels.image });
+      if (!filterType || filterType === "video")
+        sections.push({ title: "Video", entries: gatewayModels.video });
+      if (!filterType || filterType === "evaluation")
+        sections.push({
+          title: "Evaluation",
+          entries: gatewayModels.evaluation,
+        });
+      if (!filterType || filterType === "audio" || filterType === "speech")
+        sections.push({ title: "Speech", entries: gatewayModels.speech });
+      if (
+        !filterType ||
+        filterType === "audio" ||
+        filterType === "transcription"
+      )
+        sections.push({
+          title: "Transcription",
+          entries: gatewayModels.transcription,
+        });
+
+      let totalCount = 0;
+      for (const section of sections) {
+        let entries = section.entries;
+        if (filterCreator) {
+          entries = entries.filter(
+            (m) => m.creator.toLowerCase() === filterCreator
+          );
+        }
+        const grouped = groupByCreator(entries);
+        const count = [...grouped.values()].reduce((s, m) => s + m.length, 0);
+        if (count === 0) continue;
+        totalCount += count;
+        process.stdout.write(`\n${section.title} models (${count}):\n`);
+        for (const [creator, models] of grouped) {
+          process.stdout.write(`\n  ${creator}\n`);
+          for (const m of models) {
+            process.stdout.write(`    ${modelName(m.id)}\n`);
+          }
         }
       }
-    );
+
+      if (totalCount === 0) {
+        process.stderr.write("No models found matching filters\n");
+      } else {
+        process.stdout.write("\n");
+      }
+    }
+  );
 }

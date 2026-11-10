@@ -67,11 +67,13 @@ subscription proxy that Grok's own `/imagine` and `/imagine-video` commands use.
 ```bash
 ai text "summarize this" --provider grok < notes.md
 ai image "a red fox in snow" --provider grok -m grok-imagine-image-pro
+ai video "the fox turns its head as snow falls" --provider grok -i fox.jpg --resolution 1280x720
 ai video start "a paper boat on a pond" --provider grok -o boat.json
 ai video status boat.json --download
 ```
 
 - Image models are `grok-imagine-image` and `grok-imagine-image-pro`. The video model is `grok-imagine-video`.
+- Video accepts `--duration`, `--aspect-ratio`, and `--resolution` (`854x480` or `1280x720`). `-i` animates an image; the video then keeps the image's aspect ratio, and `--aspect-ratio` applies to text-only prompts.
 - `ai video start` records the provider in the operation file, so `ai video status` checks the same backend without `--provider`.
 - When the session is close to expiry, ai-cli runs `grok models` so the Grok CLI renews its own login, then reads the new token. If the session is still expired, run `grok login`.
 - Without a Grok login, the provider uses `XAI_API_KEY` against the xAI API, which bills your xAI API account instead of the subscription.

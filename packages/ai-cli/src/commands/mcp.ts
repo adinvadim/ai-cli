@@ -205,8 +205,9 @@ export const EXCLUDED_COMMANDS: Record<string, string> = {
   logout: "Credentials stay with the person.",
 };
 
-/** Gateway connection options; only the server environment may set them, so an agent cannot send the Gateway key elsewhere. */
+/** Connection options; only the server environment may set them, so an agent cannot send the Gateway key elsewhere or switch to the person's Codex or Grok login. */
 export const CONNECTION_OPTIONS = [
+  "provider",
   "headers",
   "baseUrl",
   "teamIdOrSlug",
@@ -528,7 +529,14 @@ function runTool(
   children: Set<ChildProcess>
 ): Promise<CallToolResult> {
   return new Promise((resolve) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
+    // Tool calls cannot set env, so commands can trust this marker to keep
+    // file-supplied settings (such as a saved video provider) from
+    // overriding the server's provider.
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      NO_COLOR: "1",
+      AI_CLI_MCP_SERVER: "1",
+    };
     delete env.FORCE_COLOR;
     delete env.AI_CLI_PREVIEW;
     const timeoutMs = (args.timeoutMs as number | undefined) ?? 600000;

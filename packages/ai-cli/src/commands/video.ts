@@ -31,13 +31,14 @@ import {
   validateUrl,
   type MediaOptions,
 } from "../lib/media-options.js";
-import { fetchGatewayModels, resolveModels } from "../lib/models.js";
+import { resolveModels } from "../lib/models.js";
 import {
   parsePositiveInt,
   parseAspectRatio,
   parseNonNegativeFloat,
   parseSize,
 } from "../lib/parse.js";
+import { resolveProviderName } from "../lib/providers/index.js";
 import { responseIdFromHeaders } from "../lib/response-id.js";
 import { readStdin } from "../lib/stdin.js";
 import { addTimeoutOption, timeoutMs, parseTimerMs } from "../lib/timeout.js";
@@ -176,15 +177,26 @@ export function registerVideoCommand(program: Command) {
           : parsePositiveInt(opts.downloadMaxBytes, "download-max-bytes"),
     });
     const { settings, request } = await generationInputs(prompt, opts);
-    const catalog = await fetchGatewayModels(settings.catalogOptions);
-    const models = resolveModels("video", opts.model, catalog.video);
+    const catalog = await settings.provider.catalog();
+    const models = resolveModels(
+      "video",
+      opts.model,
+      catalog.video,
+      settings.provider.defaults
+    );
     await runMediaJobs(
       models,
       async (modelId) => {
         const abortSignal = AbortSignal.timeout(timeoutMs(opts.timeout));
+        const videoModel = settings.provider.videoModel(modelId);
         const batches = await runMediaBatches(
           settings.n,
-          request.maxVideosPerCall,
+          // Without --max-videos-per-call, respect the model's own limit.
+          request.maxVideosPerCall ??
+            (typeof videoModel === "object" &&
+            typeof videoModel.maxVideosPerCall === "number"
+              ? videoModel.maxVideosPerCall
+              : undefined),
           async (count) => {
             const failedDownloads = new Map<
               string,
@@ -194,7 +206,7 @@ export function registerVideoCommand(program: Command) {
               ...request,
               n: count,
               maxVideosPerCall: count,
-              model: settings.gateway.video(modelId),
+              model: videoModel,
               poll,
               download: async (options) => {
                 try {
@@ -323,18 +335,37 @@ export function registerVideoCommand(program: Command) {
           );
       }
       const { settings, request } = await generationInputs(prompt, opts);
-      const catalog = await fetchGatewayModels(settings.catalogOptions);
-      const models = resolveModels("video", opts.model, catalog.video);
+      const catalog = await settings.provider.catalog();
+      const models = resolveModels(
+        "video",
+        opts.model,
+        catalog.video,
+        settings.provider.defaults
+      );
       if (models.length !== 1)
         throw new Error("video start accepts one model per operation");
       const model = models[0]!;
+      const videoModel = settings.provider.videoModel(model);
+      if (
+        typeof videoModel === "object" &&
+        (!("doStart" in videoModel) || !videoModel.doStart)
+      )
+        throw new Error(
+          `${settings.provider.label} cannot start asynchronous video operations; use \`ai video\` instead`
+        );
       const result = await startVideo({
         ...request,
-        model: settings.gateway.video(model),
+        model: videoModel,
         webhookUrl,
         abortSignal: AbortSignal.timeout(timeoutMs(opts.timeout)),
       });
-      const data = JSON.stringify({ model, ...result }, null, 2) + "\n";
+      // Record the provider so `video status` checks the same backend.
+      const data =
+        JSON.stringify(
+          { model, provider: settings.provider.name, ...result },
+          null,
+          2
+        ) + "\n";
       // Emit first so a filesystem failure cannot lose an already-started job.
       process.stdout.write(data);
       if (destination) {
@@ -382,7 +413,6 @@ export function registerVideoCommand(program: Command) {
       if (!path) throw new Error("video status requires an operation file");
       if (opts.output && !opts.download)
         throw new Error("video status --output requires --download");
-      const settings = await mediaSettings(opts);
       const download = createDownload({
         maxBytes:
           opts.downloadMaxBytes === undefined
@@ -390,6 +420,23 @@ export function registerVideoCommand(program: Command) {
             : parsePositiveInt(opts.downloadMaxBytes, "download-max-bytes"),
       });
       const saved = await readJsonObject(path, "operation");
+      if (saved.provider !== undefined && typeof saved.provider !== "string")
+        throw new Error("Operation file provider must be a string");
+      // Under `ai mcp`, the operation file is agent-supplied: keep the
+      // server's provider instead of the one recorded in the file.
+      const fromMcp = process.env.AI_CLI_MCP_SERVER === "1";
+      if (
+        fromMcp &&
+        saved.provider !== undefined &&
+        saved.provider !== resolveProviderName(opts.provider)
+      )
+        throw new Error(
+          `Operation file uses provider ${saved.provider}, but this MCP server uses ${resolveProviderName(opts.provider)}`
+        );
+      const settings = await mediaSettings({
+        ...opts,
+        provider: opts.provider ?? (fromMcp ? undefined : saved.provider),
+      });
       if (
         typeof saved.model !== "string" ||
         !saved.model.trim() ||
@@ -402,12 +449,15 @@ export function registerVideoCommand(program: Command) {
       if (model.length !== 1)
         throw new Error("Operation file must contain one model");
       const abortSignal = AbortSignal.timeout(timeoutMs(opts.timeout));
-      const result = await getVideoStatus(settings.gateway.video(model[0]!), {
-        operation: saved.operation as JSONValue,
-        headers: settings.headers,
-        maxRetries: settings.maxRetries,
-        abortSignal,
-      });
+      const result = await getVideoStatus(
+        settings.provider.videoModel(model[0]!),
+        {
+          operation: saved.operation as JSONValue,
+          headers: settings.headers,
+          maxRetries: settings.maxRetries,
+          abortSignal,
+        }
+      );
       if (!opts.download || result.status !== "completed") {
         process.stdout.write(
           JSON.stringify({ model: model[0], ...result }, null, 2) + "\n"

@@ -138,6 +138,8 @@ export function registerDecideCommand(program: Command) {
   addTimeoutOption(command, 30_000).action(
     async (_: undefined, options: DecideOptions) => {
       const { gateway, catalogOptions } = await mediaSettings({
+        // Evaluation models are an AI Gateway feature.
+        provider: "gateway",
         headers: options.headers,
         baseUrl: options.baseUrl,
         teamIdOrSlug: options.teamIdOrSlug,

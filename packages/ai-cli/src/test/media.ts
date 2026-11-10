@@ -51,6 +51,10 @@ globalThis.fetch = async (url, init) => {
   }
   if (route.endsWith('/endpoints')) return Response.json({ data: { endpoints: [] } });
   if (mode === 'failure' || (mode === 'partial' && headers['ai-model-id']?.includes('fail'))) return Response.json({ error: { message: 'Unsupported requested setting' } }, { status: 400 });
+  // Codex and xAI (Grok) media routes.
+  if (route.endsWith('/images/generations') || route.endsWith('/images/edits')) return Response.json({ data: [{ b64_json: png }] });
+  if (route.endsWith('/videos/generations')) return Response.json({ request_id: 'grok-job' });
+  if (route.endsWith('/videos/grok-job')) return Response.json({ status: 'done', video: { url: 'https://example.com/movie.webm', duration: 1 } });
   if (route.endsWith('/image-model')) {
     imageCalls++;
     if (mode === 'partial-image-batch' && imageCalls === 2) return Response.json({ error: { message: 'one image batch failed' } }, { status: 503 });
@@ -117,7 +121,12 @@ createRequire(${JSON.stringify(import.meta.url)})('undici').fetch = globalThis.f
   writeFileSync(image, png);
   async function run(
     args: string[],
-    options: { mode?: string; input?: Uint8Array; built?: boolean } = {}
+    options: {
+      mode?: string;
+      input?: Uint8Array;
+      built?: boolean;
+      env?: Record<string, string>;
+    } = {}
   ) {
     const requestPath = join(directory, `${crypto.randomUUID()}.jsonl`);
     writeFileSync(requestPath, "");
@@ -140,6 +149,7 @@ createRequire(${JSON.stringify(import.meta.url)})('undici').fetch = globalThis.f
           AI_CLI_OUTPUT_DIR: "",
           TEST_REQUESTS: requestPath,
           TEST_MODE: options.mode ?? "",
+          ...options.env,
         },
       },
       options.input

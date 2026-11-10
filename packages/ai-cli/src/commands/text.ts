@@ -1,6 +1,5 @@
 import {
   generateText,
-  gateway,
   type ImagePart,
   type ModelMessage,
   type TextPart,
@@ -14,7 +13,8 @@ import {
   type ImageReference,
 } from "../lib/image-references.js";
 import { buildJobs, runJobs } from "../lib/jobs.js";
-import { fetchGatewayModels, resolveModels } from "../lib/models.js";
+import { addProviderOption, mediaSettings } from "../lib/media-options.js";
+import { resolveModels } from "../lib/models.js";
 import type { OutputFormat } from "../lib/output.js";
 import { parsePositiveInt, parseTemperature } from "../lib/parse.js";
 import { readStdin, stdinAsText } from "../lib/stdin.js";
@@ -35,6 +35,7 @@ interface TextOptions {
   concurrency?: string;
   quiet?: boolean;
   json?: boolean;
+  provider?: string;
   timeout: number;
 }
 
@@ -73,7 +74,7 @@ export function registerTextCommand(program: Command) {
     .option("-t, --temperature <n>", "Temperature (0-2)")
     .option("-q, --quiet", "Suppress progress output")
     .option("--json", "Output metadata as JSON");
-  addTimeoutOption(command, DEFAULT_TIMEOUT_MS).action(
+  addTimeoutOption(addProviderOption(command), DEFAULT_TIMEOUT_MS).action(
     async (rawPrompt: string | undefined, opts: TextOptions) => {
       const prompt = rawPrompt?.trim() || undefined;
       const stdin = await readStdin();
@@ -104,8 +105,14 @@ export function registerTextCommand(program: Command) {
       const textPrompt = buildTextPrompt({ prompt, stdinText, images });
 
       const format = resolveFormat(opts.format);
-      const gatewayModels = await fetchGatewayModels();
-      const models = resolveModels("text", opts.model, gatewayModels.text);
+      const { provider } = await mediaSettings({ provider: opts.provider });
+      const catalog = await provider.catalog();
+      const models = resolveModels(
+        "text",
+        opts.model,
+        catalog.text,
+        provider.defaults
+      );
       const countPerModel = opts.count
         ? parsePositiveInt(opts.count, "count")
         : 1;
@@ -127,7 +134,7 @@ export function registerTextCommand(program: Command) {
               "http-referer": "https://github.com/vercel-labs/ai-cli",
               "x-title": "ai-cli",
             },
-            model: gateway(modelId),
+            model: provider.languageModel(modelId),
             prompt: textPrompt,
             system: opts.system,
             maxOutputTokens: maxTokens,

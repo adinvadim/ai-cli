@@ -112,6 +112,21 @@ describe("toolArgv", () => {
   });
 });
 
+test("keeps the provider choice in the MCP server environment", () => {
+  for (const tool of tools)
+    expect(tool.inputSchema.properties).not.toHaveProperty("provider");
+  // An agent must not switch to the person's Codex or Grok login.
+  expect(
+    toolArgv(tools, "image", {
+      prompt: "x",
+      extraArgs: ["--provider", "codex"],
+    })
+  ).toEqual({
+    error:
+      "extraArgs must not set --provider; set it in the MCP server environment",
+  });
+});
+
 test("keeps Gateway scope controlled by the MCP server environment", () => {
   for (const tool of tools) {
     expect(tool.inputSchema.properties).not.toHaveProperty("scope");

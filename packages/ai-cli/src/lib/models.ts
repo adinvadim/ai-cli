@@ -6,14 +6,39 @@ export type Modality =
   | "transcription"
   | "evaluation";
 
-const DEFAULTS: Record<Modality, string> = {
-  text: process.env.AI_CLI_TEXT_MODEL ?? "openai/gpt-5.5",
-  image: process.env.AI_CLI_IMAGE_MODEL ?? "openai/gpt-image-2",
-  video: process.env.AI_CLI_VIDEO_MODEL ?? "bytedance/seedance-2.0",
-  speech: process.env.AI_CLI_SPEECH_MODEL ?? "openai/tts-1",
-  transcription: process.env.AI_CLI_TRANSCRIPTION_MODEL ?? "openai/whisper-1",
-  evaluation: process.env.AI_CLI_EVALUATION_MODEL ?? "typesafe-ai/jev",
+const BUILTIN_DEFAULTS: Record<Modality, string> = {
+  text: "openai/gpt-5.5",
+  image: "openai/gpt-image-2",
+  video: "bytedance/seedance-2.0",
+  speech: "openai/tts-1",
+  transcription: "openai/whisper-1",
+  evaluation: "typesafe-ai/jev",
 };
+
+const DEFAULT_ENV: Record<Modality, string> = {
+  text: "AI_CLI_TEXT_MODEL",
+  image: "AI_CLI_IMAGE_MODEL",
+  video: "AI_CLI_VIDEO_MODEL",
+  speech: "AI_CLI_SPEECH_MODEL",
+  transcription: "AI_CLI_TRANSCRIPTION_MODEL",
+  evaluation: "AI_CLI_EVALUATION_MODEL",
+};
+
+/** Default models from AI_CLI_*_MODEL; they describe the default provider. */
+export function envModelDefaults(): Partial<Record<Modality, string>> {
+  const defaults: Partial<Record<Modality, string>> = {};
+  for (const [modality, name] of Object.entries(DEFAULT_ENV))
+    if (process.env[name]) defaults[modality as Modality] = process.env[name];
+  return defaults;
+}
+
+/** The provider's default for a modality, else the AI Gateway default. */
+export function defaultModel(
+  modality: Modality,
+  defaults: Partial<Record<Modality, string>> = envModelDefaults()
+): string {
+  return defaults[modality] || BUILTIN_DEFAULTS[modality];
+}
 
 const GATEWAY_MODELS_URL = "https://ai-gateway.vercel.sh/v1/models";
 const GATEWAY_TIMEOUT_MS = 5_000;
@@ -293,15 +318,33 @@ function normalizePricing(
 export function resolveModels(
   modality: Modality,
   userModel?: string,
-  knownModels?: Pick<ModelEntry, "id">[]
+  knownModels?: Pick<ModelEntry, "id">[],
+  defaults?: Partial<Record<Modality, string>>
 ): string[] {
-  if (!userModel) return [validateModelId(DEFAULTS[modality])];
+  const fallback = () => [validateModelId(defaultModel(modality, defaults))];
+  if (!userModel) return fallback();
   const models = userModel
     .split(",")
     .map((m) => m.trim())
     .filter(Boolean)
     .map((m) => validateModelId(expandModelId(m, knownModels)));
-  return models.length > 0 ? models : [validateModelId(DEFAULTS[modality])];
+  return models.length > 0 ? models : fallback();
+}
+
+/** Build a catalog from entries for providers without a Gateway-shaped model list. */
+export function catalogFromEntries(
+  entries: ModelEntry[],
+  available: boolean,
+  languageImageModelIds: Iterable<string> = []
+): GatewayModels {
+  const result = emptyGatewayModels();
+  result.available = available;
+  result.lookup = entries;
+  result.all = entries.filter((entry) => entry.capabilities.length > 0);
+  for (const entry of result.all)
+    for (const capability of entry.capabilities) result[capability].push(entry);
+  result.languageImageModelIds = new Set(languageImageModelIds);
+  return result;
 }
 
 function validateModelId(modelId: string): string {

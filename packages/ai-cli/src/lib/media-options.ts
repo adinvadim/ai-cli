@@ -4,11 +4,19 @@ import { createGateway } from "@ai-sdk/gateway";
 import type { generateImage } from "ai";
 
 import type { Command } from "./command.js";
+import { envModelDefaults, fetchGatewayModels } from "./models.js";
 import {
   parseInteger,
   parseNonNegativeInt,
   parsePositiveInt,
 } from "./parse.js";
+import {
+  assertGatewayOnlyOptions,
+  createModelProvider,
+  PROVIDER_NAMES,
+  resolveProviderName,
+  type ModelProvider,
+} from "./providers/index.js";
 
 export interface MediaOptions {
   model?: string;
@@ -21,11 +29,19 @@ export interface MediaOptions {
   baseUrl?: string;
   teamIdOrSlug?: string;
   scope?: string;
+  provider?: string;
   quiet?: boolean;
   json?: boolean;
   concurrency?: string;
   preview?: boolean;
   timeout: number;
+}
+
+export function addProviderOption(command: Command): Command {
+  return command.option(
+    "--provider <name>",
+    `Model provider: ${PROVIDER_NAMES.join(", ")} (default: AI_CLI_PROVIDER or gateway)`
+  );
 }
 
 export function addGatewayConnectionOptions(command: Command): Command {
@@ -40,7 +56,7 @@ export function addGatewayConnectionOptions(command: Command): Command {
 }
 
 export function addGatewayOptions(command: Command): Command {
-  return addGatewayConnectionOptions(command).option(
+  return addGatewayConnectionOptions(addProviderOption(command)).option(
     "--max-retries <n>",
     "SDK maxRetries (default: 2; 0 disables retries)"
   );
@@ -128,6 +144,7 @@ export async function mediaSettings(
   defaultConcurrency = 1
 ): Promise<{
   gateway: ReturnType<typeof createGateway>;
+  provider: ModelProvider;
   n: number;
   seed: number | undefined;
   maxRetries: number | undefined;
@@ -141,6 +158,8 @@ export async function mediaSettings(
     headers: Record<string, string>;
   };
 }> {
+  const providerName = resolveProviderName(opts.provider);
+  assertGatewayOnlyOptions(providerName, opts);
   const n = opts.n === undefined ? 1 : parsePositiveInt(opts.n, "n");
   const seed =
     opts.seed === undefined ? undefined : parseInteger(opts.seed, "seed");
@@ -209,22 +228,48 @@ export async function mediaSettings(
       return globalThis.fetch(input, init);
     },
   });
+  const catalogOptions = {
+    baseURL,
+    headers: {
+      ...(teamIdOrSlug ? { "x-vercel-ai-gateway-team": teamIdOrSlug } : {}),
+      ...headers,
+    },
+  };
+  const provider = createModelProvider(
+    providerName,
+    { gateway, catalogOptions, headers },
+    fetchGatewayModels
+  );
   return {
     gateway,
+    provider: {
+      ...provider,
+      // AI_CLI_*_MODEL configure the default provider. An explicit
+      // --provider for another backend keeps that backend's own defaults.
+      defaults: isDefaultProvider(opts.provider, providerName)
+        ? { ...provider.defaults, ...envModelDefaults() }
+        : provider.defaults,
+    },
     n,
     seed,
     maxRetries,
     concurrency,
     providerOptions,
     headers,
-    catalogOptions: {
-      baseURL,
-      headers: {
-        ...(teamIdOrSlug ? { "x-vercel-ai-gateway-team": teamIdOrSlug } : {}),
-        ...headers,
-      },
-    },
+    catalogOptions,
   };
+}
+
+function isDefaultProvider(
+  requested: string | undefined,
+  resolved: ModelProvider["name"]
+): boolean {
+  if (requested === undefined) return true;
+  try {
+    return resolveProviderName() === resolved;
+  } catch {
+    return false;
+  }
 }
 
 /** Deep merge provider objects without dropping siblings or accepting prototype keys. */

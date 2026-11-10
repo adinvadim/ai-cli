@@ -11,12 +11,12 @@ import {
 } from "../lib/format.js";
 import {
   addGatewayConnectionOptions,
+  addProviderOption,
   mediaSettings,
   type MediaOptions,
 } from "../lib/media-options.js";
 import {
   expandModelId,
-  fetchGatewayModels,
   fetchModelEndpoints,
   type Modality,
   type ModelEntry,
@@ -48,9 +48,9 @@ function pricingString(pricing: ModelEntry["pricing"], key: string) {
 async function showModelInfo(
   input: string,
   json: boolean,
-  options: Awaited<ReturnType<typeof mediaSettings>>["catalogOptions"]
+  settings: Awaited<ReturnType<typeof mediaSettings>>
 ): Promise<void> {
-  const gatewayModels = await fetchGatewayModels(options);
+  const gatewayModels = await settings.provider.catalog();
   const id = expandModelId(input, gatewayModels.lookup);
   const entry = gatewayModels.lookup.find((m) => m.id === id);
   if (!entry) {
@@ -60,7 +60,11 @@ async function showModelInfo(
     process.exit(1);
   }
 
-  const endpointsInfo = await fetchModelEndpoints(entry.id, options);
+  // Per-endpoint routing stats are an AI Gateway feature.
+  const endpointsInfo =
+    settings.provider.name === "gateway"
+      ? await fetchModelEndpoints(entry.id, settings.catalogOptions)
+      : null;
 
   if (json) {
     const output = {
@@ -163,7 +167,7 @@ async function showModelInfo(
 export function registerModelsCommand(program: Command) {
   const command = program
     .command("models")
-    .description("List available models from AI Gateway")
+    .description("List available models from the selected provider")
     .argument(
       "[model]",
       "Show detailed info for a model (e.g. anthropic/claude-opus-4.6)"
@@ -174,7 +178,7 @@ export function registerModelsCommand(program: Command) {
     )
     .option("--creator <name>", "Filter by creator (e.g. openai, google)")
     .option("--json", "Output as JSON (includes native Gateway capabilities)");
-  addGatewayConnectionOptions(command).action(
+  addGatewayConnectionOptions(addProviderOption(command)).action(
     async (
       model: string | undefined,
       opts: Partial<MediaOptions> & {
@@ -183,7 +187,7 @@ export function registerModelsCommand(program: Command) {
         json?: boolean;
       }
     ) => {
-      const { catalogOptions } = await mediaSettings(opts);
+      const settings = await mediaSettings(opts);
       if (model) {
         if (opts.type || opts.creator) {
           process.stderr.write(
@@ -191,7 +195,7 @@ export function registerModelsCommand(program: Command) {
           );
           process.exit(1);
         }
-        await showModelInfo(model, opts.json ?? false, catalogOptions);
+        await showModelInfo(model, opts.json ?? false, settings);
         return;
       }
       const validTypes = [
@@ -212,7 +216,7 @@ export function registerModelsCommand(program: Command) {
       }
       const filterCreator = opts.creator?.toLowerCase();
 
-      const gatewayModels = await fetchGatewayModels(catalogOptions);
+      const gatewayModels = await settings.provider.catalog();
 
       if (opts.json) {
         let entries = gatewayModels.all;

@@ -14,7 +14,7 @@ import {
   mergeOptions,
   type MediaOptions,
 } from "../lib/media-options.js";
-import { fetchGatewayModels, resolveModels } from "../lib/models.js";
+import { resolveModels } from "../lib/models.js";
 import { parsePositiveInt, parseSize, parseAspectRatio } from "../lib/parse.js";
 import { responseIdFromHeaders } from "../lib/response-id.js";
 import { readStdin } from "../lib/stdin.js";
@@ -113,13 +113,17 @@ export function registerImageCommand(program: Command) {
         );
       const imagePrompt =
         images.length > 0 ? { images, text: prompt, mask } : prompt!;
-      const catalog = await fetchGatewayModels(settings.catalogOptions);
+      const { provider } = settings;
+      const catalog = await provider.catalog();
       const explicitApi =
         opts.api ?? (opts.generateTextOptions ? "generateText" : undefined);
-      const languageIds = new Set([
-        ...catalog.languageImageModelIds,
-        ...SVG_LANGUAGE_IMAGE_MODEL_IDS,
-      ]);
+      // Providers without generateText image models skip catalog routing.
+      const imageApiOnly = provider.imageApiOnly === true;
+      const languageIds = new Set(
+        imageApiOnly
+          ? []
+          : [...catalog.languageImageModelIds, ...SVG_LANGUAGE_IMAGE_MODEL_IDS]
+      );
       const models = resolveModels(
         "image",
         opts.model,
@@ -130,22 +134,24 @@ export function registerImageCommand(program: Command) {
             : [
                 ...catalog.image,
                 ...[...SVG_LANGUAGE_IMAGE_MODEL_IDS].map((id) => ({ id })),
-              ]
+              ],
+        provider.defaults
       );
-      if (!explicitApi && !catalog.available)
+      if (!explicitApi && !imageApiOnly && !catalog.available)
         throw new Error(
           "Cannot determine the image API because model discovery failed. Retry or select --api generateImage / --api generateText explicitly."
         );
-      const missingModel = !explicitApi
-        ? models.find(
-            (model) =>
-              !languageIds.has(model) &&
-              !catalog.image.some((entry) => entry.id === model)
-          )
-        : undefined;
+      const missingModel =
+        !explicitApi && !imageApiOnly
+          ? models.find(
+              (model) =>
+                !languageIds.has(model) &&
+                !catalog.image.some((entry) => entry.id === model)
+            )
+          : undefined;
       if (missingModel)
         throw new Error(
-          `Cannot determine the image API for ${missingModel} because it is missing from the Gateway image catalog. Select --api generateImage or --api generateText explicitly.`
+          `Cannot determine the image API for ${missingModel} because it is missing from the ${provider.label} image catalog. Select --api generateImage or --api generateText explicitly.`
         );
       const usesText = (model: string) =>
         explicitApi === "generateText" ||
@@ -182,7 +188,7 @@ export function registerImageCommand(program: Command) {
               const result = await generateText({
                 ...textOptions,
                 ...request(),
-                model: settings.gateway(modelId),
+                model: provider.languageModel(modelId),
                 messages: [
                   {
                     role: "user",
@@ -289,13 +295,19 @@ export function registerImageCommand(program: Command) {
               failures: batchFailures(batches),
             };
           }
+          const imageModel = provider.imageModel(modelId);
           const batches = await runMediaBatches(
             settings.n,
-            maxImagesPerCall,
+            // Without --max-images-per-call, respect the model's own limit.
+            maxImagesPerCall ??
+              (typeof imageModel === "object" &&
+              typeof imageModel.maxImagesPerCall === "number"
+                ? imageModel.maxImagesPerCall
+                : undefined),
             (count) =>
               generateImage({
                 ...request(),
-                model: settings.gateway.image(modelId),
+                model: imageModel,
                 prompt: imagePrompt,
                 n: count,
                 maxImagesPerCall: count,

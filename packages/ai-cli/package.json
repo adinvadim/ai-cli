@@ -45,6 +45,9 @@
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.112",
+    "@ai-sdk/provider": "4.0.27",
+    "@ai-sdk/xai": "5.0.22",
+    "@openrouter/ai-sdk-provider": "3.1.0",
     "ai": "7.0.139",
     "sharp": "0.35.4",
     "undici": "7.30.0"
